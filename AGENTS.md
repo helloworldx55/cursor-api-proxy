@@ -6,6 +6,10 @@
 
 工单在 helloworldx55/cursor-api-proxy 的 GitHub Issues，用 `gh` 操作。见 `docs/agents/issue-tracker.md`。
 
+### GitHub 网络
+
+`git` / `gh` 访问 GitHub 时，为**这一条命令**设置 `HTTP_PROXY` 与 `HTTPS_PROXY` 为 `http://127.0.0.1:7897`（本机代理端口 7897）。PowerShell 示例：`$env:HTTPS_PROXY = "http://127.0.0.1:7897"`。不写入 git config。
+
 ### Triage labels
 
 默认角色：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。见 `docs/agents/triage-labels.md`。
