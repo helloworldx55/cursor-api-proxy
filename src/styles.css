@@ -148,7 +148,8 @@ textarea {
   line-height: 1.45;
 }
 
-button {
+button,
+a.button {
   flex: 1;
   font: inherit;
   border: 0;
@@ -157,6 +158,8 @@ button {
   cursor: pointer;
   background: #e4c38a;
   color: #1a140c;
+  text-align: center;
+  text-decoration: none;
 }
 
 button.ghost {

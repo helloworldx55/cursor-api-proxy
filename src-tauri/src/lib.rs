@@ -2,9 +2,9 @@ mod commands;
 
 use commands::{
     bridge_log, bridge_status, caller_config, clear_bridge_records, complete_wizard,
-    credential_status, current_status, production_config, request_summaries, rotate_bridge_token,
-    save_cursor_api_key, set_autostart, show_settings, start_bridge, start_runtime, stop_bridge,
-    stop_runtime, wizard_status, ConsoleState,
+    credential_status, current_status, production_config, release_check, request_summaries,
+    rotate_bridge_token, save_cursor_api_key, set_autostart, show_settings, start_bridge,
+    start_runtime, stop_bridge, stop_runtime, wizard_status, ConsoleState,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -40,7 +40,8 @@ pub fn run() {
             clear_bridge_records,
             wizard_status,
             complete_wizard,
-            set_autostart
+            set_autostart,
+            release_check
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "打开设置", true, None::<&str>)?;

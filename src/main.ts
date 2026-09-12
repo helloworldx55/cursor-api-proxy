@@ -41,6 +41,20 @@ const completeWizardBtn = () =>
   document.querySelector<HTMLButtonElement>("#complete-wizard");
 const autostartEl = () => document.querySelector<HTMLInputElement>("#autostart");
 const autostartWarningEl = () => document.querySelector("#autostart-warning");
+const releaseBannerEl = () =>
+  document.querySelector<HTMLElement>("#release-banner");
+const releaseMessageEl = () => document.querySelector("#release-message");
+const releaseDownloadEl = () =>
+  document.querySelector<HTMLAnchorElement>("#release-download");
+const dismissReleaseBtn = () =>
+  document.querySelector<HTMLButtonElement>("#dismiss-release");
+
+let releaseDismissed = false;
+
+type UpdatePrompt = {
+  latest_version: string;
+  download_url: string;
+};
 
 type CredentialStatusView = {
   cursor_api_key_saved: boolean;
@@ -285,6 +299,34 @@ async function saveCursorApiKey() {
   }
 }
 
+function renderRelease(prompt: UpdatePrompt | null) {
+  const banner = releaseBannerEl();
+  if (!banner) return;
+  if (releaseDismissed || !prompt) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  const message = releaseMessageEl();
+  if (message) {
+    message.textContent = `发现新 Release ${prompt.latest_version}。请自行下载，Console 不会替换正在运行的 exe。`;
+  }
+  const link = releaseDownloadEl();
+  if (link) link.href = prompt.download_url;
+}
+
+async function refreshRelease() {
+  if (releaseDismissed) {
+    renderRelease(null);
+    return;
+  }
+  try {
+    renderRelease(await invoke<UpdatePrompt | null>("release_check"));
+  } catch {
+    renderRelease(null);
+  }
+}
+
 async function refresh() {
   const status = await invoke<BridgeStatusView>("bridge_status");
   render(status);
@@ -368,6 +410,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   autostartEl()?.addEventListener("change", () => {
     void toggleAutostart();
   });
+  dismissReleaseBtn()?.addEventListener("click", () => {
+    releaseDismissed = true;
+    renderRelease(null);
+  });
   await listen<BridgeStatusView>("bridge-status", (event) => {
     render(event.payload);
     void refreshCallerConfig(event.payload.running);
@@ -379,4 +425,5 @@ window.addEventListener("DOMContentLoaded", async () => {
     void refreshRecords();
   }, 2000);
   await refresh();
+  await refreshRelease();
 });

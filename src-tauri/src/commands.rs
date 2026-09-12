@@ -7,6 +7,9 @@ use cursor2api_bridge_runtime::{
     RuntimeConfig, DEFAULT_PREFERRED_PORT,
 };
 use cursor2api_console_setup::{self as setup, SetupPaths, SetupStatus};
+use cursor2api_release_check::{
+    check_for_update, GitHubReleaseSource, UpdatePrompt,
+};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -366,6 +369,17 @@ pub fn complete_wizard(
 pub fn set_autostart(state: State<ConsoleState>, enabled: bool) -> Result<SetupStatus, String> {
     setup::set_autostart(&state.setup, enabled, &current_exe()?)?;
     setup_view(&state)
+}
+
+#[tauri::command]
+pub fn release_check() -> Result<Option<UpdatePrompt>, String> {
+    match check_for_update(
+        env!("CARGO_PKG_VERSION"),
+        &GitHubReleaseSource::default(),
+    ) {
+        Ok(prompt) => Ok(prompt),
+        Err(_) => Ok(None),
+    }
 }
 
 pub fn show_settings(app: &AppHandle) {

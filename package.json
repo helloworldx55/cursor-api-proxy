@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "cargo test -p cursor2api-bridge-runtime -p cursor2api-console-setup --manifest-path src-tauri/Cargo.toml"
+    "test": "cargo test -p cursor2api-bridge-runtime -p cursor2api-console-setup -p cursor2api-release-check --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
