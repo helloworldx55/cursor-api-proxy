@@ -6,12 +6,14 @@ use cursor2api_bridge_runtime::{
     find_executable, BridgeRuntime, BridgeState, BridgeTokenStore, CursorApiKeyStore,
     RuntimeConfig, DEFAULT_PREFERRED_PORT,
 };
+use cursor2api_console_setup::{self as setup, SetupPaths, SetupStatus};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct ConsoleState {
     runtime: Mutex<BridgeRuntime>,
     last_error: Mutex<Option<String>>,
+    setup: SetupPaths,
 }
 
 #[derive(Clone, Serialize)]
@@ -37,6 +39,7 @@ impl ConsoleState {
                 Arc::new(KeyringCursorApiKeyStore),
             )),
             last_error: Mutex::new(None),
+            setup: setup::production_paths(app_data_dir()),
         }
     }
 
@@ -313,6 +316,56 @@ pub fn clear_bridge_records(state: State<ConsoleState>) -> Result<(), String> {
         .lock()
         .map_err(|_| "runtime lock".to_string())?
         .clear_records()
+}
+
+fn setup_view(state: &ConsoleState) -> Result<SetupStatus, String> {
+    let runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| "runtime lock".to_string())?;
+    let exe = current_exe()?;
+    Ok(setup::status(
+        &state.setup,
+        runtime.agent_cli_present(),
+        runtime.has_bridge_token()?,
+        &exe,
+    ))
+}
+
+fn current_exe() -> Result<PathBuf, String> {
+    std::env::current_exe().map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn wizard_status(state: State<ConsoleState>) -> Result<SetupStatus, String> {
+    setup_view(&state)
+}
+
+#[tauri::command]
+pub fn complete_wizard(
+    state: State<ConsoleState>,
+    enable_autostart: bool,
+) -> Result<SetupStatus, String> {
+    let (agent_cli_present, has_bridge_token) = {
+        let runtime = state
+            .runtime
+            .lock()
+            .map_err(|_| "runtime lock".to_string())?;
+        (runtime.agent_cli_present(), runtime.has_bridge_token()?)
+    };
+    setup::complete(
+        &state.setup,
+        agent_cli_present,
+        has_bridge_token,
+        enable_autostart,
+        &current_exe()?,
+    )
+}
+
+#[tauri::command]
+pub fn set_autostart(state: State<ConsoleState>, enabled: bool) -> Result<SetupStatus, String> {
+    setup::set_autostart(&state.setup, enabled, &current_exe()?)?;
+    setup_view(&state)
 }
 
 pub fn show_settings(app: &AppHandle) {

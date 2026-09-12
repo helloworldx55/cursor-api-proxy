@@ -93,6 +93,19 @@ label {
   color: #9a9388;
 }
 
+label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  color: #ece7dc;
+  font-size: 0.92rem;
+}
+
+label.check input {
+  width: auto;
+  accent-color: #e4c38a;
+}
+
 input {
   font: inherit;
   color: #ece7dc;

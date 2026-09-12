@@ -31,6 +31,16 @@ const summariesEl = () => document.querySelector("#request-summaries");
 const logEl = () => document.querySelector<HTMLTextAreaElement>("#bridge-log");
 const clearRecordsBtn = () =>
   document.querySelector<HTMLButtonElement>("#clear-records");
+const wizardEl = () => document.querySelector<HTMLElement>("#wizard");
+const wizardPrereqsEl = () => document.querySelector("#wizard-prereqs");
+const wizardWarningEl = () => document.querySelector("#wizard-warning");
+const wizardErrorEl = () => document.querySelector<HTMLElement>("#wizard-error");
+const wizardAutostartEl = () =>
+  document.querySelector<HTMLInputElement>("#wizard-autostart");
+const completeWizardBtn = () =>
+  document.querySelector<HTMLButtonElement>("#complete-wizard");
+const autostartEl = () => document.querySelector<HTMLInputElement>("#autostart");
+const autostartWarningEl = () => document.querySelector("#autostart-warning");
 
 type CredentialStatusView = {
   cursor_api_key_saved: boolean;
@@ -44,6 +54,97 @@ type RequestSummary = {
   remote_addr: string;
   path: string;
 };
+
+type SetupStatus = {
+  agent_cli_present: boolean;
+  has_bridge_token: boolean;
+  can_complete: boolean;
+  completed: boolean;
+  autostart_enabled: boolean;
+  move_folder_warning: string;
+};
+
+function renderSetup(status: SetupStatus) {
+  const wizard = wizardEl();
+  if (wizard) wizard.hidden = status.completed;
+  const prereqs = wizardPrereqsEl();
+  if (prereqs) {
+    const cli = status.agent_cli_present
+      ? "已检测到 Agent CLI"
+      : "未找到 Agent CLI";
+    const token = status.has_bridge_token
+      ? "已有 Bridge Token"
+      : "尚无 Bridge Token（请先启动 Bridge）";
+    prereqs.textContent = `${cli} · ${token}`;
+  }
+  const warn = wizardWarningEl();
+  if (warn) warn.textContent = status.move_folder_warning;
+  const settingsWarn = autostartWarningEl();
+  if (settingsWarn) settingsWarn.textContent = status.move_folder_warning;
+  const complete = completeWizardBtn();
+  if (complete) complete.disabled = !status.can_complete;
+  const autostart = autostartEl();
+  if (autostart && document.activeElement !== autostart) {
+    autostart.checked = status.autostart_enabled;
+  }
+  const wizardAuto = wizardAutostartEl();
+  if (wizardAuto && !status.completed && document.activeElement !== wizardAuto) {
+    if (!wizardAuto.dataset.touched) {
+      wizardAuto.checked = true;
+    }
+  }
+}
+
+async function refreshSetup() {
+  try {
+    renderSetup(await invoke<SetupStatus>("wizard_status"));
+    const error = wizardErrorEl();
+    if (error) {
+      error.hidden = true;
+      error.textContent = "";
+    }
+  } catch (err) {
+    const wizard = wizardEl();
+    if (wizard) wizard.hidden = false;
+    const error = wizardErrorEl();
+    if (error) {
+      error.hidden = false;
+      error.textContent = String(err);
+    }
+  }
+}
+
+async function completeWizard() {
+  const enable = wizardAutostartEl()?.checked ?? true;
+  try {
+    renderSetup(
+      await invoke<SetupStatus>("complete_wizard", {
+        enableAutostart: enable,
+      }),
+    );
+  } catch (err) {
+    const error = wizardErrorEl();
+    if (error) {
+      error.hidden = false;
+      error.textContent = String(err);
+    }
+    await refreshSetup();
+  }
+}
+
+async function toggleAutostart() {
+  const enabled = autostartEl()?.checked ?? false;
+  try {
+    renderSetup(await invoke<SetupStatus>("set_autostart", { enabled }));
+  } catch (err) {
+    const error = errorEl();
+    if (error) {
+      error.hidden = false;
+      error.textContent = String(err);
+    }
+    await refreshSetup();
+  }
+}
 
 function formatSummaryTime(value: string) {
   const millis = Number(value);
@@ -190,6 +291,7 @@ async function refresh() {
   await refreshCallerConfig(status.running);
   await refreshCredentials();
   await refreshRecords();
+  await refreshSetup();
 }
 
 async function start() {
@@ -209,6 +311,7 @@ async function start() {
     });
     await refreshCallerConfig(false);
   }
+  await refreshSetup();
 }
 
 async function stop() {
@@ -255,11 +358,22 @@ window.addEventListener("DOMContentLoaded", async () => {
   clearRecordsBtn()?.addEventListener("click", () => {
     void clearRecords();
   });
+  completeWizardBtn()?.addEventListener("click", () => {
+    void completeWizard();
+  });
+  wizardAutostartEl()?.addEventListener("change", () => {
+    const box = wizardAutostartEl();
+    if (box) box.dataset.touched = "1";
+  });
+  autostartEl()?.addEventListener("change", () => {
+    void toggleAutostart();
+  });
   await listen<BridgeStatusView>("bridge-status", (event) => {
     render(event.payload);
     void refreshCallerConfig(event.payload.running);
     void refreshCredentials();
     void refreshRecords();
+    void refreshSetup();
   });
   window.setInterval(() => {
     void refreshRecords();

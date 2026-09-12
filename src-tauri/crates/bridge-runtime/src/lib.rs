@@ -195,6 +195,18 @@ impl BridgeRuntime {
         Ok(())
     }
 
+    pub fn agent_cli_present(&self) -> bool {
+        find_agent_cli(&self.config.path_env).is_some()
+    }
+
+    pub fn has_bridge_token(&self) -> Result<bool, String> {
+        Ok(self
+            .token_store
+            .load()?
+            .filter(|value| !value.is_empty())
+            .is_some())
+    }
+
     pub fn save_cursor_api_key(&self, key: &str) -> Result<(), String> {
         let key = key.trim();
         if key.is_empty() {

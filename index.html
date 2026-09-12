@@ -17,6 +17,20 @@
         </p>
       </header>
 
+      <section id="wizard" class="copy-card">
+        <p class="label">首次向导</p>
+        <p id="wizard-prereqs">正在检测 Agent CLI 与 Bridge Token…</p>
+        <p id="wizard-warning" class="disclaimer"></p>
+        <label class="check">
+          <input id="wizard-autostart" type="checkbox" checked />
+          完成后启用 Autostart（默认是）
+        </label>
+        <div class="actions">
+          <button id="complete-wizard" type="button" disabled>完成向导</button>
+        </div>
+        <p id="wizard-error" class="error" hidden></p>
+      </section>
+
       <section class="status-card" aria-live="polite">
         <p class="label">状态</p>
         <p id="health">未启动</p>
@@ -68,6 +82,15 @@
           <button id="copy-config" type="button" disabled>复制 Caller 配置</button>
           <button id="rotate-token" type="button" class="ghost">轮换 Bridge Token</button>
         </div>
+      </section>
+
+      <section class="copy-card">
+        <p class="label">Autostart</p>
+        <p id="autostart-warning" class="disclaimer"></p>
+        <label class="check">
+          <input id="autostart" type="checkbox" />
+          登录 Windows 时启动这份 exe
+        </label>
       </section>
 
       <section class="copy-card">
