@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/bridge-runtime", "crates/console-setup", "crates/release-check"]
+members = [".", "crates/bridge-runtime", "crates/console-setup", "crates/release-check", "crates/release-pack"]
 resolver = "2"
 
 [package]
@@ -23,6 +23,7 @@ serde_json = "1"
 cursor2api-bridge-runtime = { path = "crates/bridge-runtime" }
 cursor2api-console-setup = { path = "crates/console-setup" }
 cursor2api-release-check = { path = "crates/release-check" }
+cursor2api-release-pack = { path = "crates/release-pack", default-features = false }
 keyring = { version = "3", features = ["windows-native"] }
 
 

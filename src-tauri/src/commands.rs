@@ -10,6 +10,7 @@ use cursor2api_console_setup::{self as setup, SetupPaths, SetupStatus};
 use cursor2api_release_check::{
     check_for_update, GitHubReleaseSource, UpdatePrompt,
 };
+use cursor2api_release_pack::bundled_bridge;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -72,20 +73,39 @@ impl ConsoleState {
 
 pub fn production_config() -> Result<RuntimeConfig, String> {
     let path_env = std::env::var("PATH").unwrap_or_default();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if let Some(bundled) = bundled_bridge(dir) {
+                return Ok(runtime_config(
+                    path_env,
+                    bundled.node,
+                    vec![bundled.cli.to_string_lossy().into_owned()],
+                ));
+            }
+        }
+    }
     let sidecar_program = find_executable("node", &path_env).ok_or_else(|| {
-        "未找到 Node。v0 开发态使用系统 Node 拉起 npm 包 cursor-api-proxy。".to_string()
+        "未找到 Node。Release zip 应内嵌 runtime/node.exe；开发态可使用系统 Node。".to_string()
     })?;
     let cli = resolve_bridge_cli()?;
-    Ok(RuntimeConfig {
+    Ok(runtime_config(
+        path_env,
+        sidecar_program,
+        vec![cli.to_string_lossy().into_owned()],
+    ))
+}
+
+fn runtime_config(path_env: String, sidecar_program: PathBuf, sidecar_args: Vec<String>) -> RuntimeConfig {
+    RuntimeConfig {
         preferred_port: DEFAULT_PREFERRED_PORT,
         path_env,
         sidecar_program,
-        sidecar_args: vec![cli.to_string_lossy().into_owned()],
+        sidecar_args,
         startup_timeout: Duration::from_secs(20),
         log_path: Some(app_data_dir().join("bridge.log")),
         summaries_path: Some(app_data_dir().join("request-summaries.json")),
         max_log_bytes: cursor2api_bridge_runtime::MAX_LOG_BYTES,
-    })
+    }
 }
 
 fn app_data_dir() -> PathBuf {

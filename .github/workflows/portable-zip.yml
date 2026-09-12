@@ -1,0 +1,61 @@
+name: portable-zip
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-zip:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Console without MSI/NSIS
+        run: npm run tauri build -- --no-bundle
+
+      - name: Stage Bridge npm package
+        shell: pwsh
+        run: |
+          $ver = node -p "require('./package.json').dependencies['cursor-api-proxy']"
+          New-Item -ItemType Directory -Force pack-npm | Out-Null
+          Set-Location pack-npm
+          npm init -y | Out-Null
+          npm install --omit=dev "cursor-api-proxy@$ver"
+
+      - name: Download portable Node
+        shell: pwsh
+        run: |
+          $ver = node -p "process.version.substring(1)"
+          New-Item -ItemType Directory -Force runtime | Out-Null
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$ver/win-x64/node.exe" -OutFile runtime/node.exe
+
+      - name: Pack cursor2api-windows.zip
+        shell: pwsh
+        run: |
+          cargo run --manifest-path src-tauri/Cargo.toml -p cursor2api-release-pack --bin pack-portable -- --console src-tauri/target/release/cursor2api.exe --node runtime/node.exe --bridge-cli pack-npm/node_modules/cursor-api-proxy/dist/cli.js --readme README.md --out-dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cursor2api-windows
+          path: dist/cursor2api-windows.zip
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/cursor2api-windows.zip
+          fail_on_unmatched_files: true
