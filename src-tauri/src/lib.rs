@@ -1,8 +1,8 @@
 mod commands;
 
 use commands::{
-    bridge_status, current_status, production_config, show_settings, start_bridge, start_runtime,
-    stop_bridge, stop_runtime, ConsoleState,
+    bridge_status, caller_config, current_status, production_config, rotate_bridge_token,
+    show_settings, start_bridge, start_runtime, stop_bridge, stop_runtime, ConsoleState,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -28,7 +28,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bridge_status,
             start_bridge,
-            stop_bridge
+            stop_bridge,
+            caller_config,
+            rotate_bridge_token
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "打开设置", true, None::<&str>)?;
@@ -96,5 +98,6 @@ fn fallback_config() -> cursor2api_bridge_runtime::RuntimeConfig {
         sidecar_program: std::path::PathBuf::from("cursor2api-missing-bridge"),
         sidecar_args: Vec::new(),
         startup_timeout: Duration::from_secs(5),
+        log_path: None,
     }
 }

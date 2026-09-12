@@ -6,3 +6,6 @@ description = "Bridge Runtime: detect Agent CLI, start/stop the sidecar, report 
 
 [lib]
 name = "cursor2api_bridge_runtime"
+
+[dependencies]
+getrandom = "0.2"

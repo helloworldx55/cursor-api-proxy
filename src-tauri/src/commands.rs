@@ -1,9 +1,10 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cursor2api_bridge_runtime::{
-    find_executable, BridgeRuntime, BridgeState, RuntimeConfig, DEFAULT_PREFERRED_PORT,
+    find_executable, BridgeRuntime, BridgeState, BridgeTokenStore, RuntimeConfig,
+    DEFAULT_PREFERRED_PORT,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -24,7 +25,10 @@ pub struct BridgeStatusView {
 impl ConsoleState {
     pub fn from_config(config: RuntimeConfig) -> Self {
         Self {
-            runtime: Mutex::new(BridgeRuntime::new(config)),
+            runtime: Mutex::new(BridgeRuntime::with_token_store(
+                config,
+                Arc::new(KeyringTokenStore),
+            )),
             last_error: Mutex::new(None),
         }
     }
@@ -65,6 +69,7 @@ pub fn production_config() -> Result<RuntimeConfig, String> {
         sidecar_program,
         sidecar_args: vec![cli.to_string_lossy().into_owned()],
         startup_timeout: Duration::from_secs(20),
+        log_path: None,
     })
 }
 
@@ -92,6 +97,27 @@ fn resolve_bridge_cli() -> Result<PathBuf, String> {
         .ok_or_else(|| {
             "未找到 cursor-api-proxy（期望 node_modules/cursor-api-proxy/dist/cli.js）。".into()
         })
+}
+
+pub struct KeyringTokenStore;
+
+impl BridgeTokenStore for KeyringTokenStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        let entry = keyring::Entry::new("cursor2api", "bridge-token")
+            .map_err(|err| err.to_string())?;
+        match entry.get_password() {
+            Ok(token) if !token.is_empty() => Ok(Some(token)),
+            Ok(_) => Ok(None),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    fn save(&self, token: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new("cursor2api", "bridge-token")
+            .map_err(|err| err.to_string())?;
+        entry.set_password(token).map_err(|err| err.to_string())
+    }
 }
 
 pub fn start_runtime(app: &AppHandle, preferred_port: u16) -> Result<BridgeStatusView, String> {
@@ -162,6 +188,38 @@ pub fn start_bridge(app: AppHandle, preferred_port: Option<u16>) -> Result<Bridg
 #[tauri::command]
 pub fn stop_bridge(app: AppHandle) -> Result<BridgeStatusView, String> {
     stop_runtime(&app)
+}
+
+#[tauri::command]
+pub fn caller_config(state: State<ConsoleState>) -> Result<String, String> {
+    state
+        .runtime
+        .lock()
+        .map_err(|_| "runtime lock".to_string())?
+        .caller_config()
+}
+
+#[tauri::command]
+pub fn rotate_bridge_token(app: AppHandle) -> Result<BridgeStatusView, String> {
+    let state = app.state::<ConsoleState>();
+    let result = {
+        let mut runtime = state.runtime.lock().map_err(|_| "runtime lock")?;
+        runtime.rotate_token().map_err(|err| err.to_string())
+    };
+    match result {
+        Ok(_) => {
+            *state.last_error.lock().map_err(|_| "error lock")? = None;
+            let view = state.snapshot();
+            publish_status(&app, &view)?;
+            Ok(view)
+        }
+        Err(message) => {
+            *state.last_error.lock().map_err(|_| "error lock")? = Some(message.clone());
+            let view = state.snapshot();
+            let _ = publish_status(&app, &view);
+            Err(message)
+        }
+    }
 }
 
 pub fn show_settings(app: &AppHandle) {

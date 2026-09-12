@@ -37,8 +37,21 @@
       <div class="actions">
         <button id="start" type="button">启动</button>
         <button id="stop" type="button" class="ghost">停止</button>
-        <button id="copy-bound" type="button" class="ghost" disabled>复制 Bound Port</button>
       </div>
+
+      <section class="copy-card">
+        <p class="label">Caller 配置</p>
+        <textarea
+          id="caller-config"
+          readonly
+          rows="4"
+          placeholder="启动 Bridge 后在此复制 Base URL 与 Bridge Token"
+        ></textarea>
+        <div class="actions">
+          <button id="copy-config" type="button" disabled>复制 Caller 配置</button>
+          <button id="rotate-token" type="button" class="ghost">轮换 Bridge Token</button>
+        </div>
+      </section>
     </main>
   </body>
 </html>

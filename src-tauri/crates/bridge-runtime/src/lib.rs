@@ -1,7 +1,9 @@
-use std::io::{Read, Write};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_PREFERRED_PORT: u16 = 8765;
@@ -14,6 +16,7 @@ pub struct RuntimeConfig {
     pub sidecar_program: PathBuf,
     pub sidecar_args: Vec<String>,
     pub startup_timeout: Duration,
+    pub log_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,16 +50,43 @@ impl std::fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
+pub trait BridgeTokenStore: Send + Sync {
+    fn load(&self) -> Result<Option<String>, String>;
+    fn save(&self, token: &str) -> Result<(), String>;
+}
+
+#[derive(Default)]
+pub struct MemoryTokenStore {
+    inner: Mutex<Option<String>>,
+}
+
+impl BridgeTokenStore for MemoryTokenStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        Ok(self.inner.lock().map_err(|err| err.to_string())?.clone())
+    }
+
+    fn save(&self, token: &str) -> Result<(), String> {
+        *self.inner.lock().map_err(|err| err.to_string())? = Some(token.to_string());
+        Ok(())
+    }
+}
+
 pub struct BridgeRuntime {
     config: RuntimeConfig,
+    token_store: Arc<dyn BridgeTokenStore>,
     child: Option<Child>,
     bound_port: Option<u16>,
 }
 
 impl BridgeRuntime {
     pub fn new(config: RuntimeConfig) -> Self {
+        Self::with_token_store(config, Arc::new(MemoryTokenStore::default()))
+    }
+
+    pub fn with_token_store(config: RuntimeConfig, token_store: Arc<dyn BridgeTokenStore>) -> Self {
         Self {
             config,
+            token_store,
             child: None,
             bound_port: None,
         }
@@ -78,15 +108,27 @@ impl BridgeRuntime {
         let bound_port = first_free_port(self.config.preferred_port)
             .ok_or(StartError::NoPortAvailable)?;
 
+        let token = resolve_bridge_token(self.token_store.as_ref())?;
+
         let mut command = Command::new(&self.config.sidecar_program);
+        let capture_logs = self.config.log_path.is_some();
         command
             .args(&self.config.sidecar_args)
             .env("PATH", &self.config.path_env)
             .env("CURSOR_BRIDGE_HOST", BIND_HOST)
             .env("CURSOR_BRIDGE_PORT", bound_port.to_string())
+            .env("CURSOR_BRIDGE_API_KEY", &token)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(if capture_logs {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stderr(if capture_logs {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            });
 
         #[cfg(windows)]
         {
@@ -99,11 +141,17 @@ impl BridgeRuntime {
             message: format!("无法拉起 Bridge sidecar：{err}"),
         })?;
 
+        if let Some(log_path) = &self.config.log_path {
+            attach_redacted_logs(&mut child, log_path, &token);
+        }
+
         if !wait_for_health(bound_port, self.config.startup_timeout) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(StartError::HealthCheckTimeout);
         }
+
+        persist_bridge_token(self.token_store.as_ref(), &token)?;
 
         self.child = Some(child);
         self.bound_port = Some(bound_port);
@@ -131,6 +179,31 @@ impl BridgeRuntime {
 
     pub fn preferred_port(&self) -> u16 {
         self.config.preferred_port
+    }
+
+    pub fn caller_config(&self) -> Result<String, String> {
+        let bound_port = self
+            .bound_port
+            .ok_or_else(|| "Bridge 未启动，没有 Bound Port 可复制给 Caller。".to_string())?;
+        let token = self
+            .token_store
+            .load()?
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "尚未生成 Bridge Token。".to_string())?;
+        Ok(format!(
+            "Base URL: http://{BIND_HOST}:{bound_port}/v1\nBridge Token: {token}"
+        ))
+    }
+
+    pub fn rotate_token(&mut self) -> Result<String, StartError> {
+        let token = generate_bridge_token()?;
+        self.token_store
+            .save(&token)
+            .map_err(|message| StartError::SidecarFailed { message })?;
+        if self.bound_port.is_some() {
+            self.start()?;
+        }
+        Ok(token)
     }
 }
 
@@ -203,6 +276,78 @@ fn probe_dir(dir: &Path, name: &str, extensions: &[String]) -> Option<PathBuf> {
 
 fn file_exists(path: &Path) -> bool {
     path.is_file()
+}
+
+fn resolve_bridge_token(store: &dyn BridgeTokenStore) -> Result<String, StartError> {
+    if let Some(existing) = store
+        .load()
+        .map_err(|message| StartError::SidecarFailed { message })?
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(existing);
+    }
+    generate_bridge_token()
+}
+
+fn persist_bridge_token(store: &dyn BridgeTokenStore, token: &str) -> Result<(), StartError> {
+    let existing = store
+        .load()
+        .map_err(|message| StartError::SidecarFailed { message })?;
+    if existing.as_deref() == Some(token) {
+        return Ok(());
+    }
+    store
+        .save(token)
+        .map_err(|message| StartError::SidecarFailed { message })
+}
+
+fn generate_bridge_token() -> Result<String, StartError> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|err| StartError::SidecarFailed {
+        message: format!("无法生成 Bridge Token：{err}"),
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn redact_bridge_token(text: &str, token: &str) -> String {
+    if token.is_empty() {
+        return text.to_string();
+    }
+    text.replace(token, "***")
+}
+
+fn attach_redacted_logs(child: &mut Child, log_path: &Path, token: &str) {
+    let Ok(file) = OpenOptions::new().create(true).append(true).open(log_path) else {
+        return;
+    };
+    let file = Arc::new(Mutex::new(file));
+    if let Some(stdout) = child.stdout.take() {
+        spawn_log_reader(stdout, file.clone(), token.to_string());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_log_reader(stderr, file, token.to_string());
+    }
+}
+
+fn spawn_log_reader<R: Read + Send + 'static>(
+    reader: R,
+    file: Arc<Mutex<std::fs::File>>,
+    token: String,
+) {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut buf = String::new();
+        while let Ok(n) = reader.read_line(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let line = redact_bridge_token(&buf, &token);
+            if let Ok(mut file) = file.lock() {
+                let _ = file.write_all(line.as_bytes());
+            }
+            buf.clear();
+        }
+    });
 }
 
 fn first_free_port(preferred: u16) -> Option<u16> {

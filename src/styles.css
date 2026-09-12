@@ -108,6 +108,28 @@ input {
   gap: 12px;
 }
 
+.copy-card {
+  background: #1d1c24;
+  border: 1px solid #2e2c36;
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+textarea {
+  font: inherit;
+  font-size: 0.9rem;
+  color: #ece7dc;
+  background: #14131a;
+  border: 1px solid #3a3844;
+  border-radius: 10px;
+  padding: 10px 12px;
+  resize: none;
+  line-height: 1.45;
+}
+
 button {
   flex: 1;
   font: inherit;

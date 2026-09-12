@@ -15,7 +15,12 @@ const preferredEl = () =>
   document.querySelector<HTMLInputElement>("#preferred-port");
 const startBtn = () => document.querySelector<HTMLButtonElement>("#start");
 const stopBtn = () => document.querySelector<HTMLButtonElement>("#stop");
-const copyBtn = () => document.querySelector<HTMLButtonElement>("#copy-bound");
+const copyConfigBtn = () =>
+  document.querySelector<HTMLButtonElement>("#copy-config");
+const rotateBtn = () =>
+  document.querySelector<HTMLButtonElement>("#rotate-token");
+const callerConfigEl = () =>
+  document.querySelector<HTMLTextAreaElement>("#caller-config");
 
 function render(status: BridgeStatusView) {
   const health = healthEl();
@@ -44,15 +49,34 @@ function render(status: BridgeStatusView) {
   }
   const start = startBtn();
   const stop = stopBtn();
-  const copy = copyBtn();
+  const copy = copyConfigBtn();
   if (start) start.disabled = status.running;
   if (stop) stop.disabled = !status.running;
   if (copy) copy.disabled = !status.bound_port;
+  if (!status.bound_port) {
+    const area = callerConfigEl();
+    if (area) area.value = "";
+  }
+}
+
+async function refreshCallerConfig(running: boolean) {
+  const area = callerConfigEl();
+  if (!area) return;
+  if (!running) {
+    area.value = "";
+    return;
+  }
+  try {
+    area.value = await invoke<string>("caller_config");
+  } catch {
+    area.value = "";
+  }
 }
 
 async function refresh() {
   const status = await invoke<BridgeStatusView>("bridge_status");
   render(status);
+  await refreshCallerConfig(status.running);
 }
 
 async function start() {
@@ -62,6 +86,7 @@ async function start() {
       preferredPort: preferred,
     });
     render(status);
+    await refreshCallerConfig(status.running);
   } catch (err) {
     render({
       running: false,
@@ -69,12 +94,30 @@ async function start() {
       preferred_port: preferred,
       error: String(err),
     });
+    await refreshCallerConfig(false);
   }
 }
 
 async function stop() {
   const status = await invoke<BridgeStatusView>("stop_bridge");
   render(status);
+  await refreshCallerConfig(status.running);
+}
+
+async function rotateToken() {
+  try {
+    const status = await invoke<BridgeStatusView>("rotate_bridge_token");
+    render(status);
+    await refreshCallerConfig(status.running);
+  } catch (err) {
+    const status = await invoke<BridgeStatusView>("bridge_status").catch(
+      () => null,
+    );
+    if (status) {
+      render({ ...status, error: String(err) });
+      await refreshCallerConfig(status.running);
+    }
+  }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -84,14 +127,18 @@ window.addEventListener("DOMContentLoaded", async () => {
   stopBtn()?.addEventListener("click", () => {
     void stop();
   });
-  copyBtn()?.addEventListener("click", async () => {
-    const port = boundEl()?.textContent?.trim();
-    if (port && port !== "—") {
-      await navigator.clipboard.writeText(port);
+  copyConfigBtn()?.addEventListener("click", async () => {
+    const text = callerConfigEl()?.value.trim();
+    if (text) {
+      await navigator.clipboard.writeText(text);
     }
+  });
+  rotateBtn()?.addEventListener("click", () => {
+    void rotateToken();
   });
   await listen<BridgeStatusView>("bridge-status", (event) => {
     render(event.payload);
+    void refreshCallerConfig(event.payload.running);
   });
   await refresh();
 });
