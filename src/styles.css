@@ -20,7 +20,7 @@ body {
 }
 
 .panel {
-  max-width: 440px;
+  max-width: 520px;
   margin: 0 auto;
   padding: 36px 28px 40px;
   display: flex;
@@ -155,4 +155,29 @@ button.ghost {
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.summary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #d8d2c6;
+}
+
+.summary-list li {
+  padding: 6px 0;
+  border-bottom: 1px solid #2e2c36;
+}
+
+.summary-list li:last-child {
+  border-bottom: 0;
+}
+
+#bridge-log {
+  min-height: 8rem;
 }

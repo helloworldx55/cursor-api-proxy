@@ -27,11 +27,75 @@ const credentialStatusEl = () =>
   document.querySelector("#credential-status");
 const callerConfigEl = () =>
   document.querySelector<HTMLTextAreaElement>("#caller-config");
+const summariesEl = () => document.querySelector("#request-summaries");
+const logEl = () => document.querySelector<HTMLTextAreaElement>("#bridge-log");
+const clearRecordsBtn = () =>
+  document.querySelector<HTMLButtonElement>("#clear-records");
 
 type CredentialStatusView = {
   cursor_api_key_saved: boolean;
   agent_cli_logged_in: boolean;
 };
+
+type RequestSummary = {
+  time: string;
+  method: string;
+  status: number;
+  remote_addr: string;
+  path: string;
+};
+
+function formatSummaryTime(value: string) {
+  const millis = Number(value);
+  if (!Number.isFinite(millis)) return value;
+  return new Date(millis).toLocaleString();
+}
+
+function renderSummaries(items: RequestSummary[]) {
+  const el = summariesEl();
+  if (!el) return;
+  el.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("li");
+    empty.textContent = "暂无 Request Summary";
+    el.append(empty);
+    return;
+  }
+  for (const item of [...items].reverse()) {
+    const li = document.createElement("li");
+    li.textContent = `${formatSummaryTime(item.time)} ${item.method} ${item.status} ${item.remote_addr} ${item.path}`;
+    el.append(li);
+  }
+}
+
+async function refreshRecords() {
+  try {
+    renderSummaries(await invoke<RequestSummary[]>("request_summaries"));
+  } catch {
+    renderSummaries([]);
+  }
+  const log = logEl();
+  if (log) {
+    try {
+      log.value = await invoke<string>("bridge_log");
+    } catch {
+      log.value = "";
+    }
+  }
+}
+
+async function clearRecords() {
+  try {
+    await invoke("clear_bridge_records");
+  } catch (err) {
+    const error = errorEl();
+    if (error) {
+      error.hidden = false;
+      error.textContent = String(err);
+    }
+  }
+  await refreshRecords();
+}
 
 function renderCredentials(status: CredentialStatusView) {
   const el = credentialStatusEl();
@@ -125,6 +189,7 @@ async function refresh() {
   render(status);
   await refreshCallerConfig(status.running);
   await refreshCredentials();
+  await refreshRecords();
 }
 
 async function start() {
@@ -187,10 +252,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   saveKeyBtn()?.addEventListener("click", () => {
     void saveCursorApiKey();
   });
+  clearRecordsBtn()?.addEventListener("click", () => {
+    void clearRecords();
+  });
   await listen<BridgeStatusView>("bridge-status", (event) => {
     render(event.payload);
     void refreshCallerConfig(event.payload.running);
     void refreshCredentials();
+    void refreshRecords();
   });
+  window.setInterval(() => {
+    void refreshRecords();
+  }, 2000);
   await refresh();
 });

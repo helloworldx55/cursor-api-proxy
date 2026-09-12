@@ -76,8 +76,19 @@ pub fn production_config() -> Result<RuntimeConfig, String> {
         sidecar_program,
         sidecar_args: vec![cli.to_string_lossy().into_owned()],
         startup_timeout: Duration::from_secs(20),
-        log_path: None,
+        log_path: Some(app_data_dir().join("bridge.log")),
+        summaries_path: Some(app_data_dir().join("request-summaries.json")),
+        max_log_bytes: cursor2api_bridge_runtime::MAX_LOG_BYTES,
     })
+}
+
+fn app_data_dir() -> PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("cursor2api");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn resolve_bridge_cli() -> Result<PathBuf, String> {
@@ -275,6 +286,33 @@ pub fn credential_status(state: State<ConsoleState>) -> Result<CredentialStatusV
         cursor_api_key_saved: status.cursor_api_key_saved,
         agent_cli_logged_in: status.agent_cli_logged_in,
     })
+}
+
+#[tauri::command]
+pub fn request_summaries(state: State<ConsoleState>) -> Vec<cursor2api_bridge_runtime::RequestSummary> {
+    state
+        .runtime
+        .lock()
+        .map(|runtime| runtime.request_summaries())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn bridge_log(state: State<ConsoleState>) -> String {
+    state
+        .runtime
+        .lock()
+        .map(|runtime| runtime.log_text())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn clear_bridge_records(state: State<ConsoleState>) -> Result<(), String> {
+    state
+        .runtime
+        .lock()
+        .map_err(|_| "runtime lock".to_string())?
+        .clear_records()
 }
 
 pub fn show_settings(app: &AppHandle) {

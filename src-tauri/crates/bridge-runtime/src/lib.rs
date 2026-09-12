@@ -1,13 +1,20 @@
+mod access;
+
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use access::{spawn_bound_port_forwarder, RecordStore};
+
 pub const DEFAULT_PREFERRED_PORT: u16 = 8765;
 pub const BIND_HOST: &str = "127.0.0.1";
+pub const MAX_REQUEST_SUMMARIES: usize = 200;
+pub const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -17,6 +24,17 @@ pub struct RuntimeConfig {
     pub sidecar_args: Vec<String>,
     pub startup_timeout: Duration,
     pub log_path: Option<PathBuf>,
+    pub summaries_path: Option<PathBuf>,
+    pub max_log_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RequestSummary {
+    pub time: String,
+    pub method: String,
+    pub status: u16,
+    pub remote_addr: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +124,10 @@ pub struct BridgeRuntime {
     cursor_api_key_store: Arc<dyn CursorApiKeyStore>,
     child: Option<Child>,
     bound_port: Option<u16>,
+    records: Arc<Mutex<RecordStore>>,
+    forwarder_stop: Option<Arc<AtomicBool>>,
+    bound_listener: Option<Arc<Mutex<Option<TcpListener>>>>,
+    log_file: Option<Arc<Mutex<std::fs::File>>>,
 }
 
 impl BridgeRuntime {
@@ -126,13 +148,51 @@ impl BridgeRuntime {
         token_store: Arc<dyn BridgeTokenStore>,
         cursor_api_key_store: Arc<dyn CursorApiKeyStore>,
     ) -> Self {
+        let records = Arc::new(Mutex::new(RecordStore::open(
+            config.summaries_path.clone(),
+        )));
         Self {
             config,
             token_store,
             cursor_api_key_store,
             child: None,
             bound_port: None,
+            records,
+            forwarder_stop: None,
+            bound_listener: None,
+            log_file: None,
         }
+    }
+
+    pub fn request_summaries(&self) -> Vec<RequestSummary> {
+        self.records
+            .lock()
+            .map(|store| store.summaries())
+            .unwrap_or_default()
+    }
+
+    pub fn log_text(&self) -> String {
+        self.config
+            .log_path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn clear_records(&self) -> Result<(), String> {
+        self.records
+            .lock()
+            .map_err(|err| err.to_string())?
+            .clear()?;
+        if let Some(file) = &self.log_file {
+            let mut file = file.lock().map_err(|err| err.to_string())?;
+            file.set_len(0).map_err(|err| err.to_string())?;
+            file.seek(SeekFrom::Start(0)).map_err(|err| err.to_string())?;
+            file.flush().map_err(|err| err.to_string())?;
+        } else if let Some(path) = &self.config.log_path {
+            std::fs::write(path, "").map_err(|err| err.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn save_cursor_api_key(&self, key: &str) -> Result<(), String> {
@@ -168,8 +228,17 @@ impl BridgeRuntime {
             });
         }
 
-        let bound_port = first_free_port(self.config.preferred_port)
+        let (bound_listener_socket, bound_port) = bind_loopback_from(self.config.preferred_port)
             .ok_or(StartError::NoPortAvailable)?;
+        let sidecar_port = first_free_port_except(
+            if bound_port < u16::MAX {
+                bound_port + 1
+            } else {
+                1
+            },
+            bound_port,
+        )
+        .ok_or(StartError::NoPortAvailable)?;
 
         let token = resolve_bridge_token(self.token_store.as_ref())?;
         let cursor_api_key = load_cursor_api_key(self.cursor_api_key_store.as_ref())?;
@@ -185,7 +254,7 @@ impl BridgeRuntime {
             .args(&self.config.sidecar_args)
             .env("PATH", &self.config.path_env)
             .env("CURSOR_BRIDGE_HOST", BIND_HOST)
-            .env("CURSOR_BRIDGE_PORT", bound_port.to_string())
+            .env("CURSOR_BRIDGE_PORT", sidecar_port.to_string())
             .env("CURSOR_BRIDGE_API_KEY", &token)
             .stdin(Stdio::null())
             .stdout(if capture_logs {
@@ -219,10 +288,16 @@ impl BridgeRuntime {
         })?;
 
         if let Some(log_path) = &self.config.log_path {
-            attach_redacted_logs(&mut child, log_path, &token, cursor_api_key.as_deref());
+            self.log_file = attach_redacted_logs(
+                &mut child,
+                log_path,
+                &token,
+                cursor_api_key.as_deref(),
+                self.config.max_log_bytes,
+            );
         }
 
-        if !wait_for_health(bound_port, self.config.startup_timeout) {
+        if !wait_for_health(sidecar_port, self.config.startup_timeout) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(StartError::HealthCheckTimeout);
@@ -230,12 +305,44 @@ impl BridgeRuntime {
 
         persist_bridge_token(self.token_store.as_ref(), &token)?;
 
+        if let Ok(mut store) = self.records.lock() {
+            let mut secrets = vec![token.clone()];
+            if let Some(key) = &cursor_api_key {
+                secrets.push(key.clone());
+            }
+            store.set_secrets(secrets);
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let bound_listener = Arc::new(Mutex::new(Some(bound_listener_socket)));
+        spawn_bound_port_forwarder(
+            bound_listener.clone(),
+            sidecar_port,
+            self.records.clone(),
+            stop.clone(),
+        );
+        self.forwarder_stop = Some(stop);
+        self.bound_listener = Some(bound_listener);
         self.child = Some(child);
         self.bound_port = Some(bound_port);
+
+        if !wait_for_health(bound_port, self.config.startup_timeout) {
+            self.stop();
+            return Err(StartError::HealthCheckTimeout);
+        }
+
         Ok(bound_port)
     }
 
     pub fn stop(&mut self) {
+        if let Some(flag) = self.forwarder_stop.take() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        if let Some(bind) = self.bound_listener.take() {
+            if let Ok(mut slot) = bind.lock() {
+                *slot = None;
+            }
+        }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -393,7 +500,7 @@ fn generate_bridge_token() -> Result<String, StartError> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn redact_secrets(text: &str, secrets: &[&str]) -> String {
+pub(crate) fn redact_secrets(text: &str, secrets: &[&str]) -> String {
     let mut redacted = text.to_string();
     for secret in secrets {
         if !secret.is_empty() {
@@ -403,10 +510,25 @@ fn redact_secrets(text: &str, secrets: &[&str]) -> String {
     redacted
 }
 
-fn attach_redacted_logs(child: &mut Child, log_path: &Path, token: &str, cursor_api_key: Option<&str>) {
-    let Ok(file) = OpenOptions::new().create(true).append(true).open(log_path) else {
-        return;
+fn attach_redacted_logs(
+    child: &mut Child,
+    log_path: &Path,
+    token: &str,
+    cursor_api_key: Option<&str>,
+    max_log_bytes: u64,
+) -> Option<Arc<Mutex<std::fs::File>>> {
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(log_path)
+    else {
+        return None;
     };
+    let _ = file.seek(SeekFrom::End(0));
     let file = Arc::new(Mutex::new(file));
     let secrets: Vec<String> = {
         let mut values = vec![token.to_string()];
@@ -416,17 +538,19 @@ fn attach_redacted_logs(child: &mut Child, log_path: &Path, token: &str, cursor_
         values
     };
     if let Some(stdout) = child.stdout.take() {
-        spawn_log_reader(stdout, file.clone(), secrets.clone());
+        spawn_log_reader(stdout, file.clone(), secrets.clone(), max_log_bytes);
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_log_reader(stderr, file, secrets);
+        spawn_log_reader(stderr, file.clone(), secrets, max_log_bytes);
     }
+    Some(file)
 }
 
 fn spawn_log_reader<R: Read + Send + 'static>(
     reader: R,
     file: Arc<Mutex<std::fs::File>>,
     secrets: Vec<String>,
+    max_log_bytes: u64,
 ) {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
@@ -438,11 +562,32 @@ fn spawn_log_reader<R: Read + Send + 'static>(
             let refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
             let line = redact_secrets(&buf, &refs);
             if let Ok(mut file) = file.lock() {
-                let _ = file.write_all(line.as_bytes());
+                let _ = append_rolling(&mut file, line.as_bytes(), max_log_bytes);
             }
             buf.clear();
         }
     });
+}
+
+fn append_rolling(file: &mut std::fs::File, data: &[u8], max_bytes: u64) -> std::io::Result<()> {
+    file.write_all(data)?;
+    file.flush()?;
+    if max_bytes == 0 {
+        return Ok(());
+    }
+    let len = file.metadata()?.len();
+    if len <= max_bytes {
+        return Ok(());
+    }
+    let start = len - max_bytes;
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail)?;
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&tail)?;
+    file.flush()?;
+    Ok(())
 }
 
 fn probe_agent_cli_login(path_env: &str) -> bool {
@@ -472,9 +617,23 @@ fn probe_agent_cli_login(path_env: &str) -> bool {
     !text.contains("not authenticated")
 }
 
-fn first_free_port(preferred: u16) -> Option<u16> {
+fn bind_loopback_from(preferred: u16) -> Option<(TcpListener, u16)> {
     for port in preferred..=u16::MAX {
-        if TcpListener::bind((BIND_HOST, port)).is_ok() {
+        if let Ok(listener) = TcpListener::bind((BIND_HOST, port)) {
+            return Some((listener, port));
+        }
+    }
+    None
+}
+
+fn first_free_port_except(preferred: u16, except: u16) -> Option<u16> {
+    for port in preferred..=u16::MAX {
+        if port != except && TcpListener::bind((BIND_HOST, port)).is_ok() {
+            return Some(port);
+        }
+    }
+    for port in 1..preferred {
+        if port != except && TcpListener::bind((BIND_HOST, port)).is_ok() {
             return Some(port);
         }
     }

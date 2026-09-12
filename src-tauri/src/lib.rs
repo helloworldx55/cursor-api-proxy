@@ -1,9 +1,9 @@
 mod commands;
 
 use commands::{
-    bridge_status, caller_config, credential_status, current_status, production_config,
-    rotate_bridge_token, save_cursor_api_key, show_settings, start_bridge, start_runtime,
-    stop_bridge, stop_runtime, ConsoleState,
+    bridge_log, bridge_status, caller_config, clear_bridge_records, credential_status,
+    current_status, production_config, request_summaries, rotate_bridge_token, save_cursor_api_key,
+    show_settings, start_bridge, start_runtime, stop_bridge, stop_runtime, ConsoleState,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -33,7 +33,10 @@ pub fn run() {
             caller_config,
             rotate_bridge_token,
             save_cursor_api_key,
-            credential_status
+            credential_status,
+            request_summaries,
+            bridge_log,
+            clear_bridge_records
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "打开设置", true, None::<&str>)?;
@@ -102,5 +105,7 @@ fn fallback_config() -> cursor2api_bridge_runtime::RuntimeConfig {
         sidecar_args: Vec::new(),
         startup_timeout: Duration::from_secs(5),
         log_path: None,
+        summaries_path: None,
+        max_log_bytes: cursor2api_bridge_runtime::MAX_LOG_BYTES,
     }
 }

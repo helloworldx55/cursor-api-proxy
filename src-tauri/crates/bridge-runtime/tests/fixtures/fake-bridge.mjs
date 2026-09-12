@@ -12,6 +12,11 @@ if (cursorApiKey) {
   console.log(`leaked Cursor API Key ${cursorApiKey}`);
 }
 
+const extraLogBytes = Number(process.argv[2] || "0");
+if (Number.isFinite(extraLogBytes) && extraLogBytes > 0) {
+  console.log(`${"x".repeat(extraLogBytes)}\nLOG_END_MARKER`);
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === "/health" || req.url === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });

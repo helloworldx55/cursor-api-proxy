@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use cursor2api_bridge_runtime::{
     BridgeRuntime, BridgeState, BridgeTokenStore, CursorApiKeyStore, MemoryCursorApiKeyStore,
-    MemoryTokenStore, RuntimeConfig, StartError, BIND_HOST, DEFAULT_PREFERRED_PORT,
+    MemoryTokenStore, RuntimeConfig, StartError, BIND_HOST, DEFAULT_PREFERRED_PORT, MAX_LOG_BYTES,
 };
 
 fn node_program() -> PathBuf {
@@ -40,6 +40,8 @@ fn runtime_config(path_env: String, preferred_port: u16) -> RuntimeConfig {
         sidecar_args: vec![fake_bridge_script().to_string_lossy().into_owned()],
         startup_timeout: Duration::from_secs(5),
         log_path: None,
+        summaries_path: None,
+        max_log_bytes: MAX_LOG_BYTES,
     }
 }
 
@@ -483,4 +485,256 @@ fn start_is_refused_without_cursor_api_key_or_agent_cli_login() {
         other => panic!("expected CursorCredentialMissing, got {other:?}"),
     }
     assert_eq!(runtime.state(), BridgeState::Stopped);
+}
+
+fn http_post(port: u16, path: &str, bearer: &str, body: &str) -> u16 {
+    let mut stream = match TcpStream::connect((BIND_HOST, port)) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: {BIND_HOST}:{port}\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return 0;
+    }
+    let mut buf = String::new();
+    let _ = stream.read_to_string(&mut buf);
+    buf.split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0)
+}
+
+#[test]
+fn finished_caller_request_is_kept_as_request_summary() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-summary-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("summary-bridge-token").unwrap();
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 45260),
+        store,
+    );
+    let bound = runtime.start().expect("Start Bridge");
+    assert_eq!(
+        http_status(bound, "/v1/models", Some("summary-bridge-token")),
+        200
+    );
+    let summaries = runtime.request_summaries();
+    assert_eq!(
+        summaries.len(),
+        1,
+        "one finished Caller request, got {summaries:?}"
+    );
+    let summary = &summaries[0];
+    assert_eq!(summary.method, "GET");
+    assert_eq!(summary.status, 200);
+    assert_eq!(summary.path, "/v1/models");
+    assert!(
+        summary.remote_addr.contains("127.0.0.1"),
+        "remote_addr must be loopback, got {}",
+        summary.remote_addr
+    );
+    assert!(
+        !summary.time.is_empty(),
+        "Request Summary must include time"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn request_summaries_keep_only_the_latest_200() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-summary-cap-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("cap-bridge-token").unwrap();
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 46100),
+        store,
+    );
+    let bound = runtime.start().unwrap();
+    for i in 0..201 {
+        let path = format!("/v1/n/{i}");
+        assert_eq!(http_status(bound, &path, Some("cap-bridge-token")), 200);
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let summaries = runtime.request_summaries();
+    assert_eq!(summaries.len(), 200);
+    assert_eq!(summaries[0].path, "/v1/n/1");
+    assert_eq!(summaries[199].path, "/v1/n/200");
+    runtime.stop();
+}
+
+#[test]
+fn request_summary_does_not_contain_bridge_token_or_request_body() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-summary-redact-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("must-not-appear-in-summary").unwrap();
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 45280),
+        store,
+    );
+    let bound = runtime.start().unwrap();
+    assert_eq!(
+        http_post(
+            bound,
+            "/v1/models",
+            "must-not-appear-in-summary",
+            "{\"prompt\":\"secret-request-body-literal\"}",
+        ),
+        200
+    );
+    let summaries = runtime.request_summaries();
+    assert_eq!(summaries.len(), 1);
+    let dumped = format!("{:?}", summaries);
+    assert!(
+        !dumped.contains("must-not-appear-in-summary"),
+        "Request Summary must not contain the Bridge Token, got {dumped}"
+    );
+    assert!(
+        !dumped.contains("secret-request-body-literal"),
+        "Request Summary must not contain the message body, got {dumped}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn request_summary_redacts_cursor_api_key_from_path() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-summary-key-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let keys = Arc::new(MemoryCursorApiKeyStore::default());
+    keys.save("must-not-appear-as-cursor-api-key").unwrap();
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("path-redact-token").unwrap();
+    let mut runtime = BridgeRuntime::with_stores(
+        runtime_config(dir.to_string_lossy().into_owned(), 45290),
+        store,
+        keys,
+    );
+    let bound = runtime.start().unwrap();
+    assert_eq!(
+        http_status(
+            bound,
+            "/v1/must-not-appear-as-cursor-api-key",
+            Some("path-redact-token"),
+        ),
+        200
+    );
+    let dumped = format!("{:?}", runtime.request_summaries());
+    assert!(
+        !dumped.contains("must-not-appear-as-cursor-api-key"),
+        "Request Summary must not contain the Cursor API Key, got {dumped}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn log_file_rolls_when_it_exceeds_the_cap() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-log-roll-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("bridge.log");
+    let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45300);
+    config.log_path = Some(log_path.clone());
+    config.max_log_bytes = 64;
+    config.sidecar_args.push("400".into());
+    let mut runtime = BridgeRuntime::new(config);
+    let _bound = runtime.start().unwrap();
+    let mut len = 0u64;
+    let mut contents = String::new();
+    for _ in 0..40 {
+        contents = fs::read_to_string(&log_path).unwrap_or_default();
+        len = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        if contents.contains("LOG_END_MARKER") || len > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for _ in 0..40 {
+        len = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        contents = fs::read_to_string(&log_path).unwrap_or_default();
+        if len <= 64 && contents.contains("LOG_END_MARKER") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        len <= 64,
+        "rolling log must stay within the cap, got {len} bytes: {contents:?}"
+    );
+    assert!(
+        contents.contains("LOG_END_MARKER"),
+        "rolling log must keep the newest bytes, got {contents:?}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn clear_records_wipes_summaries_and_logs_in_memory_and_on_disk() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-clear-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("bridge.log");
+    let summaries_path = dir.join("request-summaries.json");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("clear-bridge-token").unwrap();
+    let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45310);
+    config.log_path = Some(log_path.clone());
+    config.summaries_path = Some(summaries_path.clone());
+    let mut runtime = BridgeRuntime::with_token_store(config, store);
+    let bound = runtime.start().unwrap();
+    assert_eq!(
+        http_status(bound, "/v1/models", Some("clear-bridge-token")),
+        200
+    );
+    let mut log_ready = String::new();
+    for _ in 0..40 {
+        log_ready = fs::read_to_string(&log_path).unwrap_or_default();
+        if !log_ready.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !runtime.request_summaries().is_empty(),
+        "need a Request Summary before clear"
+    );
+    assert!(
+        summaries_path.is_file(),
+        "Request Summary must be written to App Data"
+    );
+    assert!(
+        !log_ready.is_empty(),
+        "log file must have content before clear"
+    );
+
+    runtime.clear_records().expect("clear records");
+    assert!(runtime.request_summaries().is_empty());
+    assert_eq!(fs::read_to_string(&log_path).unwrap_or_default(), "");
+    let persisted = fs::read_to_string(&summaries_path).unwrap_or_default();
+    assert!(
+        persisted.trim().is_empty() || persisted.trim() == "[]",
+        "disk Request Summary must be empty after clear, got {persisted:?}"
+    );
+
+    let restarted = BridgeRuntime::with_token_store(
+        {
+            let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45311);
+            config.log_path = Some(log_path.clone());
+            config.summaries_path = Some(summaries_path.clone());
+            config
+        },
+        Arc::new(MemoryTokenStore::default()),
+    );
+    assert!(
+        restarted.request_summaries().is_empty(),
+        "cleared Request Summary must not reload from disk"
+    );
+    runtime.stop();
 }
