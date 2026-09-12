@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cursor2api_bridge_runtime::{
-    find_executable, BridgeRuntime, BridgeState, BridgeTokenStore, RuntimeConfig,
-    DEFAULT_PREFERRED_PORT,
+    find_executable, BridgeRuntime, BridgeState, BridgeTokenStore, CursorApiKeyStore,
+    RuntimeConfig, DEFAULT_PREFERRED_PORT,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -22,12 +22,19 @@ pub struct BridgeStatusView {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct CredentialStatusView {
+    pub cursor_api_key_saved: bool,
+    pub agent_cli_logged_in: bool,
+}
+
 impl ConsoleState {
     pub fn from_config(config: RuntimeConfig) -> Self {
         Self {
-            runtime: Mutex::new(BridgeRuntime::with_token_store(
+            runtime: Mutex::new(BridgeRuntime::with_stores(
                 config,
                 Arc::new(KeyringTokenStore),
+                Arc::new(KeyringCursorApiKeyStore),
             )),
             last_error: Mutex::new(None),
         }
@@ -117,6 +124,27 @@ impl BridgeTokenStore for KeyringTokenStore {
         let entry = keyring::Entry::new("cursor2api", "bridge-token")
             .map_err(|err| err.to_string())?;
         entry.set_password(token).map_err(|err| err.to_string())
+    }
+}
+
+pub struct KeyringCursorApiKeyStore;
+
+impl CursorApiKeyStore for KeyringCursorApiKeyStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        let entry = keyring::Entry::new("cursor2api", "cursor-api-key")
+            .map_err(|err| err.to_string())?;
+        match entry.get_password() {
+            Ok(key) if !key.is_empty() => Ok(Some(key)),
+            Ok(_) => Ok(None),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    fn save(&self, key: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new("cursor2api", "cursor-api-key")
+            .map_err(|err| err.to_string())?;
+        entry.set_password(key).map_err(|err| err.to_string())
     }
 }
 
@@ -220,6 +248,33 @@ pub fn rotate_bridge_token(app: AppHandle) -> Result<BridgeStatusView, String> {
             Err(message)
         }
     }
+}
+
+#[tauri::command]
+pub fn save_cursor_api_key(
+    state: State<ConsoleState>,
+    key: String,
+) -> Result<CredentialStatusView, String> {
+    let runtime = state.runtime.lock().map_err(|_| "runtime lock".to_string())?;
+    runtime.save_cursor_api_key(&key)?;
+    let status = runtime.credential_status()?;
+    Ok(CredentialStatusView {
+        cursor_api_key_saved: status.cursor_api_key_saved,
+        agent_cli_logged_in: status.agent_cli_logged_in,
+    })
+}
+
+#[tauri::command]
+pub fn credential_status(state: State<ConsoleState>) -> Result<CredentialStatusView, String> {
+    let status = state
+        .runtime
+        .lock()
+        .map_err(|_| "runtime lock".to_string())?
+        .credential_status()?;
+    Ok(CredentialStatusView {
+        cursor_api_key_saved: status.cursor_api_key_saved,
+        agent_cli_logged_in: status.agent_cli_logged_in,
+    })
 }
 
 pub fn show_settings(app: &AppHandle) {

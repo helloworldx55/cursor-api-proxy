@@ -68,6 +68,11 @@ h1 {
   font-size: 1.15rem;
 }
 
+#credential-status {
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
 .error {
   margin: 10px 0 0;
   color: #f0a8a0;

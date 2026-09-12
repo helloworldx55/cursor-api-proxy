@@ -40,6 +40,23 @@
       </div>
 
       <section class="copy-card">
+        <p class="label">Cursor API Key / Agent CLI 登录</p>
+        <p id="credential-status">正在检测…</p>
+        <label>
+          Cursor API Key
+          <input
+            id="cursor-api-key"
+            type="password"
+            autocomplete="off"
+            placeholder="从 Cursor Dashboard 粘贴；已 Agent CLI 登录则不必填写"
+          />
+        </label>
+        <div class="actions">
+          <button id="save-key" type="button">保存到凭据库</button>
+        </div>
+      </section>
+
+      <section class="copy-card">
         <p class="label">Caller 配置</p>
         <textarea
           id="caller-config"

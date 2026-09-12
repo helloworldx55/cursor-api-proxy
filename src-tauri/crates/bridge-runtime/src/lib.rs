@@ -31,6 +31,7 @@ pub enum StartError {
     NoPortAvailable,
     SidecarFailed { message: String },
     HealthCheckTimeout,
+    CursorCredentialMissing { message: String },
 }
 
 impl std::fmt::Display for StartError {
@@ -44,6 +45,7 @@ impl std::fmt::Display for StartError {
             StartError::HealthCheckTimeout => {
                 write!(f, "Bridge 启动后未能在超时内响应 /health")
             }
+            StartError::CursorCredentialMissing { message } => f.write_str(message),
         }
     }
 }
@@ -71,9 +73,37 @@ impl BridgeTokenStore for MemoryTokenStore {
     }
 }
 
+pub trait CursorApiKeyStore: Send + Sync {
+    fn load(&self) -> Result<Option<String>, String>;
+    fn save(&self, key: &str) -> Result<(), String>;
+}
+
+#[derive(Default)]
+pub struct MemoryCursorApiKeyStore {
+    inner: Mutex<Option<String>>,
+}
+
+impl CursorApiKeyStore for MemoryCursorApiKeyStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        Ok(self.inner.lock().map_err(|err| err.to_string())?.clone())
+    }
+
+    fn save(&self, key: &str) -> Result<(), String> {
+        *self.inner.lock().map_err(|err| err.to_string())? = Some(key.to_string());
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialStatus {
+    pub cursor_api_key_saved: bool,
+    pub agent_cli_logged_in: bool,
+}
+
 pub struct BridgeRuntime {
     config: RuntimeConfig,
     token_store: Arc<dyn BridgeTokenStore>,
+    cursor_api_key_store: Arc<dyn CursorApiKeyStore>,
     child: Option<Child>,
     bound_port: Option<u16>,
 }
@@ -84,12 +114,45 @@ impl BridgeRuntime {
     }
 
     pub fn with_token_store(config: RuntimeConfig, token_store: Arc<dyn BridgeTokenStore>) -> Self {
+        Self::with_stores(
+            config,
+            token_store,
+            Arc::new(MemoryCursorApiKeyStore::default()),
+        )
+    }
+
+    pub fn with_stores(
+        config: RuntimeConfig,
+        token_store: Arc<dyn BridgeTokenStore>,
+        cursor_api_key_store: Arc<dyn CursorApiKeyStore>,
+    ) -> Self {
         Self {
             config,
             token_store,
+            cursor_api_key_store,
             child: None,
             bound_port: None,
         }
+    }
+
+    pub fn save_cursor_api_key(&self, key: &str) -> Result<(), String> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err("Cursor API Key 不能为空。".into());
+        }
+        self.cursor_api_key_store.save(key)
+    }
+
+    pub fn credential_status(&self) -> Result<CredentialStatus, String> {
+        let cursor_api_key_saved = self
+            .cursor_api_key_store
+            .load()?
+            .filter(|value| !value.is_empty())
+            .is_some();
+        Ok(CredentialStatus {
+            cursor_api_key_saved,
+            agent_cli_logged_in: probe_agent_cli_login(&self.config.path_env),
+        })
     }
 
     pub fn set_preferred_port(&mut self, preferred_port: u16) {
@@ -109,6 +172,12 @@ impl BridgeRuntime {
             .ok_or(StartError::NoPortAvailable)?;
 
         let token = resolve_bridge_token(self.token_store.as_ref())?;
+        let cursor_api_key = load_cursor_api_key(self.cursor_api_key_store.as_ref())?;
+        if cursor_api_key.is_none() && !probe_agent_cli_login(&self.config.path_env) {
+            return Err(StartError::CursorCredentialMissing {
+                message: "需要 Cursor API Key 或已登录的 Agent CLI，才能 Start Bridge。".into(),
+            });
+        }
 
         let mut command = Command::new(&self.config.sidecar_program);
         let capture_logs = self.config.log_path.is_some();
@@ -130,6 +199,14 @@ impl BridgeRuntime {
                 Stdio::null()
             });
 
+        if let Some(key) = &cursor_api_key {
+            command
+                .env("CURSOR_API_KEY", key)
+                .env("CURSOR_AUTH_TOKEN", key);
+        } else {
+            command.env_remove("CURSOR_API_KEY").env_remove("CURSOR_AUTH_TOKEN");
+        }
+
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -142,7 +219,7 @@ impl BridgeRuntime {
         })?;
 
         if let Some(log_path) = &self.config.log_path {
-            attach_redacted_logs(&mut child, log_path, &token);
+            attach_redacted_logs(&mut child, log_path, &token, cursor_api_key.as_deref());
         }
 
         if !wait_for_health(bound_port, self.config.startup_timeout) {
@@ -289,6 +366,13 @@ fn resolve_bridge_token(store: &dyn BridgeTokenStore) -> Result<String, StartErr
     generate_bridge_token()
 }
 
+fn load_cursor_api_key(store: &dyn CursorApiKeyStore) -> Result<Option<String>, StartError> {
+    store
+        .load()
+        .map(|value| value.filter(|key| !key.is_empty()))
+        .map_err(|message| StartError::SidecarFailed { message })
+}
+
 fn persist_bridge_token(store: &dyn BridgeTokenStore, token: &str) -> Result<(), StartError> {
     let existing = store
         .load()
@@ -309,30 +393,40 @@ fn generate_bridge_token() -> Result<String, StartError> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn redact_bridge_token(text: &str, token: &str) -> String {
-    if token.is_empty() {
-        return text.to_string();
+fn redact_secrets(text: &str, secrets: &[&str]) -> String {
+    let mut redacted = text.to_string();
+    for secret in secrets {
+        if !secret.is_empty() {
+            redacted = redacted.replace(secret, "***");
+        }
     }
-    text.replace(token, "***")
+    redacted
 }
 
-fn attach_redacted_logs(child: &mut Child, log_path: &Path, token: &str) {
+fn attach_redacted_logs(child: &mut Child, log_path: &Path, token: &str, cursor_api_key: Option<&str>) {
     let Ok(file) = OpenOptions::new().create(true).append(true).open(log_path) else {
         return;
     };
     let file = Arc::new(Mutex::new(file));
+    let secrets: Vec<String> = {
+        let mut values = vec![token.to_string()];
+        if let Some(key) = cursor_api_key {
+            values.push(key.to_string());
+        }
+        values
+    };
     if let Some(stdout) = child.stdout.take() {
-        spawn_log_reader(stdout, file.clone(), token.to_string());
+        spawn_log_reader(stdout, file.clone(), secrets.clone());
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_log_reader(stderr, file, token.to_string());
+        spawn_log_reader(stderr, file, secrets);
     }
 }
 
 fn spawn_log_reader<R: Read + Send + 'static>(
     reader: R,
     file: Arc<Mutex<std::fs::File>>,
-    token: String,
+    secrets: Vec<String>,
 ) {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
@@ -341,13 +435,41 @@ fn spawn_log_reader<R: Read + Send + 'static>(
             if n == 0 {
                 break;
             }
-            let line = redact_bridge_token(&buf, &token);
+            let refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
+            let line = redact_secrets(&buf, &refs);
             if let Ok(mut file) = file.lock() {
                 let _ = file.write_all(line.as_bytes());
             }
             buf.clear();
         }
     });
+}
+
+fn probe_agent_cli_login(path_env: &str) -> bool {
+    let Some(cli) = find_agent_cli(path_env) else {
+        return false;
+    };
+    let mut command = Command::new(&cli);
+    command.arg("status").env("PATH", path_env).stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(output) = command.output() else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase();
+    !text.contains("not authenticated")
 }
 
 fn first_free_port(preferred: u16) -> Option<u16> {

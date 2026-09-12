@@ -19,8 +19,31 @@ const copyConfigBtn = () =>
   document.querySelector<HTMLButtonElement>("#copy-config");
 const rotateBtn = () =>
   document.querySelector<HTMLButtonElement>("#rotate-token");
+const saveKeyBtn = () =>
+  document.querySelector<HTMLButtonElement>("#save-key");
+const cursorApiKeyEl = () =>
+  document.querySelector<HTMLInputElement>("#cursor-api-key");
+const credentialStatusEl = () =>
+  document.querySelector("#credential-status");
 const callerConfigEl = () =>
   document.querySelector<HTMLTextAreaElement>("#caller-config");
+
+type CredentialStatusView = {
+  cursor_api_key_saved: boolean;
+  agent_cli_logged_in: boolean;
+};
+
+function renderCredentials(status: CredentialStatusView) {
+  const el = credentialStatusEl();
+  if (!el) return;
+  const key = status.cursor_api_key_saved
+    ? "Cursor API Key 已保存在凭据库"
+    : "未保存 Cursor API Key";
+  const login = status.agent_cli_logged_in
+    ? "Agent CLI 已登录，可不贴 Key"
+    : "Agent CLI 未登录";
+  el.textContent = `${key} · ${login}`;
+}
 
 function render(status: BridgeStatusView) {
   const health = healthEl();
@@ -73,10 +96,35 @@ async function refreshCallerConfig(running: boolean) {
   }
 }
 
+async function refreshCredentials() {
+  try {
+    renderCredentials(await invoke<CredentialStatusView>("credential_status"));
+  } catch (err) {
+    const el = credentialStatusEl();
+    if (el) el.textContent = String(err);
+  }
+}
+
+async function saveCursorApiKey() {
+  const key = cursorApiKeyEl()?.value.trim() ?? "";
+  try {
+    const status = await invoke<CredentialStatusView>("save_cursor_api_key", {
+      key,
+    });
+    renderCredentials(status);
+    const input = cursorApiKeyEl();
+    if (input) input.value = "";
+  } catch (err) {
+    const el = credentialStatusEl();
+    if (el) el.textContent = String(err);
+  }
+}
+
 async function refresh() {
   const status = await invoke<BridgeStatusView>("bridge_status");
   render(status);
   await refreshCallerConfig(status.running);
+  await refreshCredentials();
 }
 
 async function start() {
@@ -136,9 +184,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   rotateBtn()?.addEventListener("click", () => {
     void rotateToken();
   });
+  saveKeyBtn()?.addEventListener("click", () => {
+    void saveCursorApiKey();
+  });
   await listen<BridgeStatusView>("bridge-status", (event) => {
     render(event.payload);
     void refreshCallerConfig(event.payload.running);
+    void refreshCredentials();
   });
   await refresh();
 });

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cursor2api_bridge_runtime::{
-    BridgeRuntime, BridgeState, BridgeTokenStore, MemoryTokenStore, RuntimeConfig, StartError,
-    BIND_HOST, DEFAULT_PREFERRED_PORT,
+    BridgeRuntime, BridgeState, BridgeTokenStore, CursorApiKeyStore, MemoryCursorApiKeyStore,
+    MemoryTokenStore, RuntimeConfig, StartError, BIND_HOST, DEFAULT_PREFERRED_PORT,
 };
 
 fn node_program() -> PathBuf {
@@ -321,4 +321,166 @@ fn log_file_does_not_contain_the_bridge_token() {
         "log file must not contain the Bridge Token, got: {contents:?}"
     );
     runtime.stop();
+}
+
+fn http_json(port: u16, path: &str) -> String {
+    let mut stream = TcpStream::connect((BIND_HOST, port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {BIND_HOST}:{port}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut buf = String::new();
+    let _ = stream.read_to_string(&mut buf);
+    buf.split("\r\n\r\n").nth(1).unwrap_or_default().to_string()
+}
+
+#[test]
+fn start_injects_stored_cursor_api_key_into_the_sidecar() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-cursor-key-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let keys = Arc::new(MemoryCursorApiKeyStore::default());
+    keys.save("cursor-dashboard-key-literal").unwrap();
+    let mut runtime = BridgeRuntime::with_stores(
+        runtime_config(dir.to_string_lossy().into_owned(), 45200),
+        Arc::new(MemoryTokenStore::default()),
+        keys,
+    );
+    let bound = runtime
+        .start()
+        .expect("Start with stored Cursor API Key");
+    let body = http_json(bound, "/health");
+    assert!(
+        body.contains("\"has_cursor_api_key\":true"),
+        "Bridge sidecar must receive CURSOR_API_KEY, got: {body}"
+    );
+    runtime.stop();
+}
+
+fn write_unauthenticated_agent_cli(dir: &Path, basename: &str) {
+    fs::create_dir_all(dir).unwrap();
+    fs::write(
+        dir.join(format!("{basename}.cmd")),
+        "@echo off\r\nif /I \"%~1\"==\"status\" (\r\n  echo Not authenticated\r\n  exit /b 1\r\n)\r\nexit /b 0\r\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn log_file_does_not_contain_the_cursor_api_key() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-key-log-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let log_path = dir.join("bridge.log");
+    let keys = Arc::new(MemoryCursorApiKeyStore::default());
+    keys.save("must-not-appear-as-cursor-api-key").unwrap();
+    let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45210);
+    config.log_path = Some(log_path.clone());
+    let mut runtime = BridgeRuntime::with_stores(
+        config,
+        Arc::new(MemoryTokenStore::default()),
+        keys,
+    );
+    let _bound = runtime.start().unwrap();
+    let mut contents = String::new();
+    for _ in 0..40 {
+        contents = fs::read_to_string(&log_path).unwrap_or_default();
+        if contents.contains("leaked Cursor API Key") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        contents.contains("leaked Cursor API Key"),
+        "fixture must write a log line so redaction can be observed, got: {contents:?}"
+    );
+    assert!(
+        !contents.contains("must-not-appear-as-cursor-api-key"),
+        "log file must not contain the Cursor API Key, got: {contents:?}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn credential_status_shows_saved_key_without_echoing_it() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-key-status-{}", std::process::id()));
+    write_unauthenticated_agent_cli(&dir, "cursor-agent");
+    let runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45220,
+    ));
+    runtime
+        .save_cursor_api_key("secret-cursor-api-key-literal")
+        .unwrap();
+    let status = runtime.credential_status().expect("credential status");
+    assert!(status.cursor_api_key_saved);
+    assert!(
+        !status.agent_cli_logged_in,
+        "unauthenticated Agent CLI must not look logged in"
+    );
+    assert!(
+        !format!("{status:?}").contains("secret-cursor-api-key-literal"),
+        "CredentialStatus must not echo the Cursor API Key"
+    );
+}
+
+#[test]
+fn credential_status_shows_agent_cli_login_without_requiring_a_key() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-login-status-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "agent");
+    let runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45230,
+    ));
+    let status = runtime.credential_status().expect("credential status");
+    assert!(!status.cursor_api_key_saved);
+    assert!(
+        status.agent_cli_logged_in,
+        "settings must show Agent CLI login as available without a pasted Cursor API Key"
+    );
+}
+
+#[test]
+fn start_without_cursor_api_key_when_agent_cli_is_logged_in() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-login-start-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45240,
+    ));
+    let bound = runtime
+        .start()
+        .expect("Start with Agent CLI login and no Cursor API Key");
+    let body = http_json(bound, "/health");
+    assert!(
+        body.contains("\"has_cursor_api_key\":false"),
+        "default config must not inject a Cursor API Key, got: {body}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn start_is_refused_without_cursor_api_key_or_agent_cli_login() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-no-cred-{}", std::process::id()));
+    write_unauthenticated_agent_cli(&dir, "cursor-agent");
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45250,
+    ));
+    let err = runtime
+        .start()
+        .expect_err("Start must be refused without Cursor API Key or Agent CLI login");
+    match err {
+        StartError::CursorCredentialMissing { message } => {
+            assert!(
+                message.contains("Cursor API Key"),
+                "refusal must name Cursor API Key, got: {message}"
+            );
+            assert!(
+                message.contains("Agent CLI"),
+                "refusal must name Agent CLI, got: {message}"
+            );
+        }
+        other => panic!("expected CursorCredentialMissing, got {other:?}"),
+    }
+    assert_eq!(runtime.state(), BridgeState::Stopped);
 }
