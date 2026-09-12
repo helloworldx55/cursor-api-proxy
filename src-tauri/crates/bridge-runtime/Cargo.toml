@@ -1,0 +1,8 @@
+[package]
+name = "cursor2api-bridge-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Bridge Runtime: detect Agent CLI, start/stop the sidecar, report Bound Port"
+
+[lib]
+name = "cursor2api_bridge_runtime"

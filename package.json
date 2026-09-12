@@ -1,0 +1,22 @@
+{
+  "name": "cursor2api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "cargo test -p cursor2api-bridge-runtime --manifest-path src-tauri/Cargo.toml"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "cursor-api-proxy": "^1.4.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "vite": "^8.0.16",
+    "typescript": "~6.0.3"
+  }
+}

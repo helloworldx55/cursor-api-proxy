@@ -1,0 +1,32 @@
+[workspace]
+members = [".", "crates/bridge-runtime"]
+resolver = "2"
+
+[package]
+name = "cursor2api"
+version = "0.1.0"
+description = "Windows Console that starts a local Bridge for Caller HTTP access"
+authors = ["helloworldx55"]
+edition = "2021"
+
+[lib]
+name = "cursor2api_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cursor2api-bridge-runtime = { path = "crates/bridge-runtime" }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cursor2api</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <main class="panel">
+      <header>
+        <p class="eyebrow">Console</p>
+        <h1>cursor2api</h1>
+        <p class="disclaimer">
+          本机 Bridge 只使用你自己的 Cursor Account，不是官方 Cursor 软件。
+        </p>
+      </header>
+
+      <section class="status-card" aria-live="polite">
+        <p class="label">状态</p>
+        <p id="health">未启动</p>
+        <p id="error" class="error" hidden></p>
+      </section>
+
+      <section class="ports">
+        <label>
+          Preferred Port
+          <input id="preferred-port" type="number" min="1" max="65535" value="8765" />
+        </label>
+        <div>
+          <p class="label">Bound Port</p>
+          <p id="bound-port">—</p>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button id="start" type="button">启动</button>
+        <button id="stop" type="button" class="ghost">停止</button>
+        <button id="copy-bound" type="button" class="ghost" disabled>复制 Bound Port</button>
+      </div>
+    </main>
+  </body>
+</html>
