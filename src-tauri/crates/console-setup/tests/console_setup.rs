@@ -163,6 +163,28 @@ fn completed_wizard_offers_autostart() {
     assert!(status(&paths, true, true, &exe).autostart_enabled);
 }
 
+#[test]
+fn wizard_marker_stays_when_autostart_write_fails() {
+    let paths = setup_paths("autostart-write-fail");
+    let exe = fake_exe(&paths.wizard_marker.parent().unwrap().join("bin"));
+    fs::write(&paths.startup_dir, b"not-a-directory").unwrap();
+    let err = complete(&paths, true, true, true, &exe)
+        .expect_err("Autostart write must fail so Console can show #wizard-error");
+    assert!(
+        err.contains("Autostart"),
+        "failure text must reach Console naming Autostart, got: {err}"
+    );
+    let view = status(&paths, true, true, &exe);
+    assert!(
+        view.completed,
+        "completion marker must not roll back when Autostart fails"
+    );
+    assert!(
+        !view.autostart_enabled,
+        "a failed Autostart write must not look enabled"
+    );
+}
+
 fn setup_status(completed: bool) -> SetupStatus {
     SetupStatus {
         agent_cli_present: true,

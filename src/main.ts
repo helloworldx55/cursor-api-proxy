@@ -64,6 +64,11 @@ const dismissReleaseBtn = () =>
   document.querySelector<HTMLButtonElement>("#dismiss-release");
 
 let releaseDismissed = false;
+let wizardBusy = false;
+let wizardStickyError = "";
+
+const WIZARD_IDLE_LABEL = "完成向导";
+const WIZARD_BUSY_LABEL = "正在完成向导…";
 
 type UpdatePrompt = {
   latest_version: string;
@@ -95,7 +100,9 @@ type SetupStatus = {
 
 function renderSetup(status: SetupStatus) {
   const wizard = wizardEl();
-  if (wizard) wizard.hidden = status.completed;
+  if (wizard) {
+    wizard.hidden = status.completed && !wizardBusy && !wizardStickyError;
+  }
   const prereqs = wizardPrereqsEl();
   if (prereqs) {
     const cli = status.agent_cli_present
@@ -111,7 +118,21 @@ function renderSetup(status: SetupStatus) {
   const settingsWarn = autostartWarningEl();
   if (settingsWarn) settingsWarn.textContent = status.move_folder_warning;
   const complete = completeWizardBtn();
-  if (complete) complete.disabled = !status.can_complete;
+  if (complete) {
+    complete.disabled = wizardBusy || !status.can_complete;
+    complete.textContent = wizardBusy ? WIZARD_BUSY_LABEL : WIZARD_IDLE_LABEL;
+    complete.setAttribute("aria-busy", wizardBusy ? "true" : "false");
+  }
+  const error = wizardErrorEl();
+  if (error) {
+    if (wizardStickyError) {
+      error.hidden = false;
+      error.textContent = wizardStickyError;
+    } else if (!wizardBusy) {
+      error.hidden = true;
+      error.textContent = "";
+    }
+  }
   const autostartSettings = autostartSettingsEl();
   if (autostartSettings) autostartSettings.hidden = !status.autostart_offered;
   const autostart = autostartEl();
@@ -129,35 +150,53 @@ function renderSetup(status: SetupStatus) {
 async function refreshSetup() {
   try {
     renderSetup(await invoke<SetupStatus>("wizard_status"));
-    const error = wizardErrorEl();
-    if (error) {
-      error.hidden = true;
-      error.textContent = "";
-    }
   } catch (err) {
     const wizard = wizardEl();
     if (wizard) wizard.hidden = false;
+    wizardStickyError = String(err);
     const error = wizardErrorEl();
     if (error) {
       error.hidden = false;
-      error.textContent = String(err);
+      error.textContent = wizardStickyError;
     }
   }
 }
 
 async function completeWizard() {
+  if (wizardBusy) return;
   const enable = wizardAutostartEl()?.checked ?? true;
+  wizardBusy = true;
+  wizardStickyError = "";
+  const complete = completeWizardBtn();
+  if (complete) {
+    complete.disabled = true;
+    complete.textContent = WIZARD_BUSY_LABEL;
+    complete.setAttribute("aria-busy", "true");
+  }
+  const error = wizardErrorEl();
+  if (error) {
+    error.hidden = true;
+    error.textContent = "";
+  }
   try {
-    renderSetup(
-      await invoke<SetupStatus>("complete_wizard", {
-        enableAutostart: enable,
-      }),
-    );
+    const status = await invoke<SetupStatus>("complete_wizard", {
+      enableAutostart: enable,
+    });
+    wizardBusy = false;
+    wizardStickyError = "";
+    renderSetup(status);
   } catch (err) {
-    const error = wizardErrorEl();
+    wizardBusy = false;
+    wizardStickyError = String(err);
+    const wizard = wizardEl();
+    if (wizard) wizard.hidden = false;
     if (error) {
       error.hidden = false;
-      error.textContent = String(err);
+      error.textContent = wizardStickyError;
+    }
+    if (complete) {
+      complete.disabled = false;
+      complete.textContent = WIZARD_IDLE_LABEL;
     }
     await refreshSetup();
   }

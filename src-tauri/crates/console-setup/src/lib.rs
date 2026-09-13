@@ -1,9 +1,16 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub const AUTOSTART_SHORTCUT_NAME: &str = "cursor2api.lnk";
 
 pub const MOVE_FOLDER_WARNING: &str =
     "移动解压目录会弄坏 Autostart，需重新完成向导。";
+
+pub const AUTOSTART_WRITE_TIMEOUT: Duration = Duration::from_secs(8);
+
+pub const AUTOSTART_TIMEOUT_MESSAGE: &str = "写入 Autostart 快捷方式超时。";
 
 #[derive(Debug, Clone)]
 pub struct SetupPaths {
@@ -139,7 +146,9 @@ pub fn complete(
         return Err("尚无 Bridge Token，不能完成首次向导。".into());
     }
     write_wizard_marker(paths, exe)?;
-    set_autostart(paths, enable_autostart, exe)?;
+    if let Err(err) = set_autostart(paths, enable_autostart, exe) {
+        return Err(autostart_error(err));
+    }
     Ok(status(paths, agent_cli_present, has_bridge_token, exe))
 }
 
@@ -149,12 +158,21 @@ pub fn set_autostart(paths: &SetupPaths, enabled: bool, exe: &Path) -> Result<()
     }
     let lnk = autostart_shortcut(paths);
     if enabled {
-        std::fs::create_dir_all(&paths.startup_dir).map_err(|err| err.to_string())?;
+        std::fs::create_dir_all(&paths.startup_dir).map_err(autostart_error)?;
         write_startup_shortcut(&lnk, exe)?;
     } else if lnk.exists() {
-        std::fs::remove_file(&lnk).map_err(|err| err.to_string())?;
+        std::fs::remove_file(&lnk).map_err(autostart_error)?;
     }
     Ok(())
+}
+
+fn autostart_error(err: impl std::fmt::Display) -> String {
+    let text = err.to_string();
+    if text.contains("Autostart") {
+        text
+    } else {
+        format!("无法写入 Autostart 快捷方式：{text}")
+    }
 }
 
 fn write_startup_shortcut(lnk: &Path, exe: &Path) -> Result<(), String> {
@@ -167,17 +185,10 @@ fn write_startup_shortcut(lnk: &Path, exe: &Path) -> Result<(), String> {
     let script = format!(
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({lnk_s}); $s.TargetPath = {exe_s}; $s.WorkingDirectory = {work_s}; $s.Save()"
     );
-    let mut command = std::process::Command::new("powershell");
+    let mut command = Command::new("powershell");
     command.args(["-NoProfile", "-STA", "-Command", &script]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let output = command
-        .output()
-        .map_err(|err| format!("无法写入 Autostart 快捷方式：{err}"))?;
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    let output = run_timed(command, AUTOSTART_WRITE_TIMEOUT)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("无法写入 Autostart 快捷方式：{stderr}"));
@@ -186,6 +197,43 @@ fn write_startup_shortcut(lnk: &Path, exe: &Path) -> Result<(), String> {
         return Err("Autostart 快捷方式未写入 Startup。".into());
     }
     Ok(())
+}
+
+fn run_timed(mut command: Command, timeout: Duration) -> Result<std::process::Output, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("无法写入 Autostart 快捷方式：{err}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stderr = Vec::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_end(&mut stderr);
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout: Vec::new(),
+                    stderr,
+                });
+            }
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AUTOSTART_TIMEOUT_MESSAGE.into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(err) => {
+                return Err(format!("无法写入 Autostart 快捷方式：{err}"));
+            }
+        }
+    }
 }
 
 fn powershell_literal(path: &Path) -> String {
@@ -253,4 +301,28 @@ struct WizardMarker {
     completed: bool,
     #[serde(default)]
     exe: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn autostart_command_times_out_instead_of_blocking() {
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 20"]);
+        let started = Instant::now();
+        let err = run_timed(command, Duration::from_millis(400)).expect_err("must time out");
+        assert!(
+            err.contains("超时"),
+            "timeout must be a Console-visible Autostart error, got: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "complete must not wait on a stuck Autostart write, elapsed {:?}",
+            started.elapsed()
+        );
+    }
 }
