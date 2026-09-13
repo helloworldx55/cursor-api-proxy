@@ -9,7 +9,7 @@ Windows 桌面 **Console**，产品名为 **cursor2api**。安装包内嵌 Node 
 _Avoid_: Cursor Proxy, 官方 Cursor, Cursor IDE, Cursor App, cursor-api-proxy（仅指上游 npm 包）
 
 **Console**：
-Operator 安装的桌面程序：托盘图标 + 中文设置窗口（启停、健康、可复制的 Caller 配置、最近请求、日志、首次向导）。行话保持英文：Bridge、Caller、Agent CLI、Base URL、Bridge Token、Cursor API Key。
+Operator 安装的桌面程序：托盘图标 + 中文设置窗口。首次向导未完成前，向导挡住整窗（无 Sidebar）。完成后设置窗用 Sidebar 分页展示最小集。行话保持英文：Bridge、Caller、Agent CLI、Base URL、Bridge Token、Cursor API Key、Sidebar、Preferences、Release。
 _Avoid_: 客户端, 电脑客户端, IDE, 聊天应用, widget
 
 **Bridge**：
@@ -57,12 +57,20 @@ _Avoid_: 安装目录, portable 文件夹（当作设置存放处）
 _Avoid_: 请求日志（未加限定）, 全文记录
 
 **Release**：
-可供下载的 Windows portable zip（v0.x 未签名）。启动时检查 GitHub Releases 并提示下载，不静默替换文件。
+可供下载的 Windows portable zip（v0.x 未签名）。启动时检查 GitHub Releases；下载提示出现在 Preferences，不静默替换文件，也不是 Sidebar 上单独一项。
 _Avoid_: 安装器, setup, MSI
 
 **Autostart**：
-当前用户 Startup 快捷方式，在首次向导成功结束时询问，默认选是，指向刚运行的那份 exe。关闭 Autostart 即删除该快捷方式。移动 zip 目录后快捷方式失效，需重新走完向导。
+当前用户 Startup 快捷方式，在首次向导成功结束时询问，默认选是，指向刚运行的那份 exe。关闭 Autostart 即删除该快捷方式。移动 zip 目录后快捷方式失效，需重新走完向导。向导完成后是 Sidebar 中单独一页，与 Preferences 不是同一页。
 _Avoid_: 服务, 安装勾选框
 
+**Sidebar**：
+向导完成后，Console 设置窗左侧的导航列。自上而下：Bridge、凭证、Caller、记录、Autostart、Preferences（界面写「偏好设置」）。只是导航壳，不是主题引擎，也不是任意新功能的抽屉。
+_Avoid_: 菜单, dock, 设置（指整窗时用 Console）
+
+**Preferences**：
+Sidebar 中的一页。界面中文可写「偏好设置」。v0 只承载 Release 提示（检查结果、下载、忽略）。主题与界面语言以后放在同一页，另开工单。
+_Avoid_: 设置（与 Console 设置窗叠名）, Settings
+
 **最小集**：
-v1 设置里仅有的 Bridge 控制：启停、健康、Preferred Port / Bound Port、Bridge Token、Cursor API Key / 登录状态、复制 Caller 配置、Request Summary、滚动日志（2MB）、Autostart。没有工作区路径、没有 agent 模式开关、没有完整 env 表单。
+v1 设置里仅有的控制：启停、健康、Preferred Port / Bound Port、Bridge Token、Cursor API Key / 登录状态、复制 Caller 配置、Request Summary、滚动日志（2MB）、Autostart、Preferences（v0 仅 Release 提示）。没有工作区路径、没有 agent 模式开关、没有完整 env 表单、没有主题、没有界面语言。
