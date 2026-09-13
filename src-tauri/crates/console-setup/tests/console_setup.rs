@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cursor2api_console_setup::{
-    complete, set_autostart, status, AUTOSTART_SHORTCUT_NAME, MOVE_FOLDER_WARNING, SetupPaths,
+    complete, set_autostart, shell_view, status, AUTOSTART_SHORTCUT_NAME, MOVE_FOLDER_WARNING,
+    SetupPaths, SetupStatus, ShellMode, SidebarItem,
 };
 
 fn setup_paths(tag: &str) -> SetupPaths {
@@ -160,4 +161,96 @@ fn completed_wizard_offers_autostart() {
     assert!(view.autostart_offered);
     set_autostart(&paths, true, &exe).expect("settings Autostart after wizard");
     assert!(status(&paths, true, true, &exe).autostart_enabled);
+}
+
+fn setup_status(completed: bool) -> SetupStatus {
+    SetupStatus {
+        agent_cli_present: true,
+        has_bridge_token: true,
+        can_complete: true,
+        completed,
+        autostart_enabled: false,
+        autostart_offered: completed,
+        move_folder_warning: MOVE_FOLDER_WARNING.to_string(),
+    }
+}
+
+#[test]
+fn incomplete_wizard_is_full_window_without_sidebar() {
+    let view = shell_view(&setup_status(false), None, None::<&()>, false);
+    assert_eq!(view.mode, ShellMode::Wizard);
+    assert!(
+        view.nav.is_empty(),
+        "incomplete wizard must not show Sidebar items"
+    );
+}
+
+#[test]
+fn completed_wizard_sidebar_lists_pages_top_to_bottom() {
+    let view = shell_view(&setup_status(true), None, None::<&()>, false);
+    assert_eq!(view.mode, ShellMode::Sidebar);
+    let labels: Vec<&str> = view.nav.iter().map(|item| item.label).collect();
+    assert_eq!(
+        labels,
+        ["Bridge", "凭证", "Caller", "记录", "Autostart", "偏好设置"]
+    );
+    let ids: Vec<SidebarItem> = view.nav.iter().map(|item| item.id).collect();
+    assert_eq!(
+        ids,
+        [
+            SidebarItem::Bridge,
+            SidebarItem::Credentials,
+            SidebarItem::Caller,
+            SidebarItem::Records,
+            SidebarItem::Autostart,
+            SidebarItem::Preferences,
+        ]
+    );
+}
+
+#[test]
+fn opening_console_defaults_to_bridge() {
+    let view = shell_view(&setup_status(true), None, None::<&()>, false);
+    assert_eq!(view.selected, Some(SidebarItem::Bridge));
+    assert_eq!(view.pane, Some(SidebarItem::Bridge));
+}
+
+#[test]
+fn autostart_item_appears_only_after_the_wizard_completes() {
+    let before = shell_view(&setup_status(false), None, None::<&()>, false);
+    assert!(
+        !before
+            .nav
+            .iter()
+            .any(|item| item.id == SidebarItem::Autostart),
+        "Autostart must not appear in Sidebar before the wizard completes"
+    );
+    let after = shell_view(&setup_status(true), None, None::<&()>, false);
+    assert!(
+        after
+            .nav
+            .iter()
+            .any(|item| item.id == SidebarItem::Autostart),
+        "Autostart must appear in Sidebar after the wizard completes"
+    );
+}
+
+#[test]
+fn preferences_shows_download_prompt_only_when_update_is_present_and_not_ignored() {
+    let prompt = ();
+    let with_prompt = shell_view(&setup_status(true), None, Some(&prompt), false);
+    assert!(
+        with_prompt.preferences_shows_update,
+        "an unignored UpdatePrompt must show a download hint on Preferences"
+    );
+    let ignored = shell_view(&setup_status(true), None, Some(&prompt), true);
+    assert!(
+        !ignored.preferences_shows_update,
+        "ignoring the UpdatePrompt this process must hide the download hint"
+    );
+    let none = shell_view(&setup_status(true), None, None::<&()>, false);
+    assert!(
+        !none.preferences_shows_update,
+        "no UpdatePrompt means Preferences has no download hint"
+    );
 }

@@ -22,6 +22,91 @@ pub struct SetupStatus {
     pub move_folder_warning: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellMode {
+    Wizard,
+    Sidebar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarItem {
+    Bridge,
+    Credentials,
+    Caller,
+    Records,
+    Autostart,
+    Preferences,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct SidebarNavItem {
+    pub id: SidebarItem,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ShellView {
+    pub mode: ShellMode,
+    pub nav: Vec<SidebarNavItem>,
+    pub selected: Option<SidebarItem>,
+    pub pane: Option<SidebarItem>,
+    pub preferences_shows_update: bool,
+}
+
+const COMPLETED_NAV: [SidebarNavItem; 6] = [
+    SidebarNavItem {
+        id: SidebarItem::Bridge,
+        label: "Bridge",
+    },
+    SidebarNavItem {
+        id: SidebarItem::Credentials,
+        label: "凭证",
+    },
+    SidebarNavItem {
+        id: SidebarItem::Caller,
+        label: "Caller",
+    },
+    SidebarNavItem {
+        id: SidebarItem::Records,
+        label: "记录",
+    },
+    SidebarNavItem {
+        id: SidebarItem::Autostart,
+        label: "Autostart",
+    },
+    SidebarNavItem {
+        id: SidebarItem::Preferences,
+        label: "偏好设置",
+    },
+];
+
+pub fn shell_view<P>(
+    setup: &SetupStatus,
+    selected: Option<SidebarItem>,
+    update_prompt: Option<&P>,
+    update_ignored: bool,
+) -> ShellView {
+    if !setup.completed {
+        return ShellView {
+            mode: ShellMode::Wizard,
+            nav: Vec::new(),
+            selected: None,
+            pane: None,
+            preferences_shows_update: false,
+        };
+    }
+    let chosen = selected.unwrap_or(SidebarItem::Bridge);
+    ShellView {
+        mode: ShellMode::Sidebar,
+        nav: COMPLETED_NAV.to_vec(),
+        selected: Some(chosen),
+        pane: Some(chosen),
+        preferences_shows_update: update_prompt.is_some() && !update_ignored,
+    }
+}
+
 pub fn status(
     paths: &SetupPaths,
     agent_cli_present: bool,

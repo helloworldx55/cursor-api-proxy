@@ -2,7 +2,7 @@
 name = "cursor2api-console-setup"
 version = "0.1.0"
 edition = "2021"
-description = "First-run wizard gate and Autostart Startup shortcut"
+description = "First-run wizard gate, Autostart, and Console shell view"
 
 [lib]
 name = "cursor2api_console_setup"
