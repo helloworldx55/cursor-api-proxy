@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use cursor2api_bridge_runtime::{
     BridgeRuntime, BridgeState, BridgeTokenStore, CursorApiKeyStore, MemoryCursorApiKeyStore,
-    MemoryTokenStore, OperatorHealth, RuntimeConfig, StartError, BIND_HOST,
+    MemoryTokenStore, OperatorHealth, RequestSummary, RuntimeConfig, StartError, BIND_HOST,
     DEFAULT_PREFERRED_PORT, MAX_LOG_BYTES,
 };
 
@@ -510,6 +510,148 @@ fn http_post(port: u16, path: &str, bearer: &str, body: &str) -> u16 {
         .nth(1)
         .and_then(|code| code.parse().ok())
         .unwrap_or(0)
+}
+
+fn header_value(message: &str, name: &str) -> Option<String> {
+    let headers = message.split("\r\n\r\n").next()?;
+    for line in headers.lines() {
+        let Some((header_name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if header_name.eq_ignore_ascii_case(name) {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn content_length_of(message: &str) -> usize {
+    header_value(message, "content-length")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
+
+fn read_one_http_message(stream: &mut TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 1024];
+    loop {
+        let n = match stream.read(&mut tmp) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let header_end = pos + 4;
+            let headers = String::from_utf8_lossy(&buf[..header_end]);
+            let want = header_end + content_length_of(&headers);
+            while buf.len() < want {
+                match stream.read(&mut tmp) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                }
+            }
+            let end = want.min(buf.len());
+            return String::from_utf8_lossy(&buf[..end]).into_owned();
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+#[test]
+fn bound_port_tells_caller_to_close_after_one_round() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-close-conn-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("close-round-token").unwrap();
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 45440),
+        store,
+    );
+    let bound = runtime.start().expect("Start Bridge");
+
+    let mut reused = TcpStream::connect((BIND_HOST, bound)).expect("connect Bound Port");
+    let get = format!(
+        "GET /v1/models HTTP/1.1\r\nHost: {BIND_HOST}:{bound}\r\nAuthorization: Bearer close-round-token\r\nConnection: keep-alive\r\n\r\n"
+    );
+    reused.write_all(get.as_bytes()).unwrap();
+    let first = read_one_http_message(&mut reused);
+    let connection = header_value(&first, "connection").unwrap_or_default();
+    assert!(
+        connection.eq_ignore_ascii_case("close"),
+        "Caller must see Connection: close, got {connection:?} in {first:?}"
+    );
+    assert!(
+        first.contains("200"),
+        "GET /v1/models must still succeed, got {first:?}"
+    );
+
+    let post_body = r#"{"model":"probe","messages":[{"role":"user","content":"hi"}]}"#;
+    let post = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {BIND_HOST}:{bound}\r\nAuthorization: Bearer close-round-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{post_body}",
+        post_body.len()
+    );
+    reused
+        .set_write_timeout(Some(Duration::from_millis(400)))
+        .unwrap();
+    reused
+        .set_read_timeout(Some(Duration::from_millis(400)))
+        .unwrap();
+    let wrote_again = reused.write_all(post.as_bytes()).is_ok();
+    let second = read_one_http_message(&mut reused);
+    assert!(
+        !wrote_again || second.is_empty() || !second.contains("HTTP/1.1 200"),
+        "same TCP must not complete a second keep-alive round, wrote={wrote_again} got {second:?}"
+    );
+
+    assert_eq!(
+        http_post(
+            bound,
+            "/v1/chat/completions",
+            "close-round-token",
+            post_body
+        ),
+        200
+    );
+
+    let summaries = wait_for_summaries(&runtime, 2);
+    assert!(
+        summaries.iter().any(|s| s.method == "GET" && s.path == "/v1/models" && s.status == 200),
+        "GET must be a Request Summary, got {summaries:?}"
+    );
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.method == "POST" && s.path == "/v1/chat/completions" && s.status == 200),
+        "POST on a new connection must be a Request Summary, got {summaries:?}"
+    );
+    runtime.stop();
+}
+
+fn wait_for_summaries(
+    runtime: &BridgeRuntime,
+    min: usize,
+) -> Vec<RequestSummary> {
+    for _ in 0..40 {
+        let summaries = runtime.request_summaries();
+        if summaries.len() >= min {
+            return summaries;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    runtime.request_summaries()
 }
 
 #[test]

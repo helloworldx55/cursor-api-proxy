@@ -144,8 +144,9 @@ fn forward_one(
     sidecar.set_write_timeout(Some(Duration::from_secs(300)))?;
     forward_message(&mut client, &mut sidecar, &request_headers)?;
 
-    let response_headers = read_headers(&mut sidecar)?;
+    let mut response_headers = read_headers(&mut sidecar)?;
     let status = parse_status(&response_headers.text).unwrap_or(0);
+    response_headers.text = force_connection_close(&response_headers.text);
     forward_message(&mut sidecar, &mut client, &response_headers)?;
 
     if let Ok(mut store) = store.lock() {
@@ -157,6 +158,7 @@ fn forward_one(
             path,
         });
     }
+    let _ = client.shutdown(std::net::Shutdown::Both);
     Ok(())
 }
 
@@ -289,6 +291,35 @@ fn parse_request_line(headers: &str) -> Option<(String, String)> {
 
 fn parse_status(headers: &str) -> Option<u16> {
     headers.lines().next()?.split_whitespace().nth(1)?.parse().ok()
+}
+
+fn force_connection_close(headers: &str) -> String {
+    let mut saw_connection = false;
+    let mut lines: Vec<String> = Vec::new();
+    for line in headers.split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, _)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("keep-alive") {
+                continue;
+            }
+            if name.eq_ignore_ascii_case("connection") {
+                if !saw_connection {
+                    lines.push("Connection: close".into());
+                    saw_connection = true;
+                }
+                continue;
+            }
+        }
+        lines.push(line.to_string());
+    }
+    if !saw_connection {
+        lines.push("Connection: close".into());
+    }
+    let mut out = lines.join("\r\n");
+    out.push_str("\r\n\r\n");
+    out
 }
 
 fn content_length(headers: &str) -> Option<usize> {
