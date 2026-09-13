@@ -45,6 +45,10 @@ impl RecordStore {
             .collect();
     }
 
+    pub(crate) fn has_secret(&self, value: &str) -> bool {
+        !value.is_empty() && self.secrets.iter().any(|secret| secret == value)
+    }
+
     pub(crate) fn persist(&self) -> Result<(), String> {
         let Some(path) = &self.summaries_path else {
             return Ok(());
@@ -132,6 +136,7 @@ fn forward_one(
         .peer_addr()
         .map(|addr| addr.to_string())
         .unwrap_or_else(|_| "unknown".into());
+    client.set_nonblocking(false)?;
     client.set_read_timeout(Some(Duration::from_secs(300)))?;
     client.set_write_timeout(Some(Duration::from_secs(300)))?;
 
@@ -144,12 +149,30 @@ fn forward_one(
         client.flush()?;
     }
 
+    let request_body = take_content_length_body(&request_headers, &mut client)?;
+    if is_model_check_probe(&method, &path, &request_body)
+        && request_has_bridge_token(&request_headers.text, &store)
+    {
+        write_model_check_probe(&mut client)?;
+        if let Ok(mut store) = store.lock() {
+            store.record(RequestSummary {
+                time: unix_millis_text(),
+                method,
+                status: 200,
+                remote_addr,
+                path,
+            });
+        }
+        let _ = client.shutdown(std::net::Shutdown::Both);
+        return Ok(());
+    }
+
     let mut sidecar = TcpStream::connect((BIND_HOST, sidecar_port))?;
     sidecar.set_read_timeout(Some(Duration::from_secs(300)))?;
     sidecar.set_write_timeout(Some(Duration::from_secs(300)))?;
     let outbound = HeaderBlock {
         text: strip_header(&request_headers.text, "expect"),
-        extra: request_headers.extra,
+        extra: request_body,
     };
     forward_message(&mut client, &mut sidecar, &outbound, false)?;
 
@@ -392,6 +415,137 @@ fn content_length(headers: &str) -> Option<usize> {
         }
     }
     None
+}
+
+fn take_content_length_body<R: Read>(
+    headers: &HeaderBlock,
+    src: &mut R,
+) -> std::io::Result<Vec<u8>> {
+    let Some(length) = content_length(&headers.text) else {
+        return Ok(headers.extra.clone());
+    };
+    let mut body = headers.extra.clone();
+    if body.len() > length {
+        body.truncate(length);
+        return Ok(body);
+    }
+    let mut rest = vec![0u8; length - body.len()];
+    if !rest.is_empty() {
+        src.read_exact(&mut rest)?;
+        body.extend_from_slice(&rest);
+    }
+    Ok(body)
+}
+
+fn request_has_bridge_token(headers: &str, store: &Arc<Mutex<RecordStore>>) -> bool {
+    let Some(token) = authorization_bearer(headers) else {
+        return false;
+    };
+    store
+        .lock()
+        .map(|store| store.has_secret(token))
+        .unwrap_or(false)
+}
+
+fn authorization_bearer(headers: &str) -> Option<&str> {
+    for line in headers.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("authorization") {
+            let value = value.trim();
+            return value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "));
+        }
+    }
+    None
+}
+
+fn message_text(content: &serde_json::Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.trim().to_string();
+    }
+    let Some(parts) = content.as_array() else {
+        return String::new();
+    };
+    parts
+        .iter()
+        .filter_map(|part| {
+            part.as_str()
+                .or_else(|| part.get("text").and_then(|text| text.as_str()))
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string()
+}
+
+fn is_model_check_probe(method: &str, path: &str, body: &[u8]) -> bool {
+    if method != "POST" || path != "/v1/chat/completions" {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    if value.get("stream").and_then(|stream| stream.as_bool()) == Some(true) {
+        return false;
+    }
+    let Some(messages) = value.get("messages").and_then(|messages| messages.as_array()) else {
+        return false;
+    };
+    if messages.is_empty() || messages.len() > 2 {
+        return false;
+    }
+    let mut system = None;
+    let mut user = None;
+    for message in messages {
+        let role = message
+            .get("role")
+            .and_then(|role| role.as_str())
+            .unwrap_or_default();
+        let text = message
+            .get("content")
+            .map(message_text)
+            .unwrap_or_default();
+        match role {
+            "system" | "developer" => {
+                if system.is_some() {
+                    return false;
+                }
+                system = Some(text);
+            }
+            "user" => {
+                if user.is_some() {
+                    return false;
+                }
+                user = Some(text);
+            }
+            _ => return false,
+        }
+    }
+    system.is_some_and(|text| text.eq_ignore_ascii_case("test"))
+        && user.is_some_and(|text| text.eq_ignore_ascii_case("hi"))
+}
+
+fn write_model_check_probe(client: &mut TcpStream) -> std::io::Result<()> {
+    let body = serde_json::json!({
+        "id": "chatcmpl_model_check",
+        "object": "chat.completion",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "ok" },
+            "finish_reason": "stop"
+        }]
+    })
+    .to_string();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    client.write_all(response.as_bytes())?;
+    client.flush()?;
+    Ok(())
 }
 
 fn unix_millis_text() -> String {

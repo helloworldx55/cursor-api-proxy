@@ -522,9 +522,17 @@ fn start_is_refused_without_cursor_api_key_or_agent_cli_login() {
 }
 
 fn http_post(port: u16, path: &str, bearer: &str, body: &str) -> u16 {
+    http_post_message(port, path, bearer, body)
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0)
+}
+
+fn http_post_message(port: u16, path: &str, bearer: &str, body: &str) -> String {
     let mut stream = match TcpStream::connect((BIND_HOST, port)) {
         Ok(s) => s,
-        Err(_) => return 0,
+        Err(_) => return String::new(),
     };
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -534,14 +542,11 @@ fn http_post(port: u16, path: &str, bearer: &str, body: &str) -> u16 {
         body.len()
     );
     if stream.write_all(req.as_bytes()).is_err() {
-        return 0;
+        return String::new();
     }
     let mut buf = String::new();
     let _ = stream.read_to_string(&mut buf);
-    buf.split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse().ok())
-        .unwrap_or(0)
+    buf
 }
 
 fn header_value(message: &str, name: &str) -> Option<String> {
@@ -707,6 +712,55 @@ fn bound_port_answers_expect_continue_so_post_body_can_follow() {
     assert!(
         final_msg.contains("200"),
         "POST body after 100 Continue must reach sidecar, got {final_msg:?}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn bound_port_answers_cherry_studio_model_check_without_waiting_for_agent() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-model-check-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("model-check-token").unwrap();
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 45470),
+        store,
+    );
+    let bound = runtime.start().expect("Start Bridge");
+
+    let probe = r#"{"model":"auto","messages":[{"role":"system","content":"test"},{"role":"user","content":"hi"}],"reasoning_effort":"none"}"#;
+    let started = std::time::Instant::now();
+    let probe_msg = http_post_message(bound, "/v1/chat/completions", "model-check-token", probe);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "Cherry Studio check waits 15s; probe must not wait on Agent CLI, took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        probe_msg.contains("200"),
+        "Caller model check must receive 200, got {probe_msg:?}"
+    );
+    assert!(
+        probe_msg.contains("chat.completion"),
+        "Caller model check must look like a chat completion, got {probe_msg:?}"
+    );
+    assert!(
+        !probe_msg.contains("chatcmpl-fake"),
+        "Caller model check must not wait on the sidecar Agent CLI round-trip, got {probe_msg:?}"
+    );
+
+    let chat = r#"{"model":"auto","messages":[{"role":"user","content":"write a short poem about Bound Port"}]}"#;
+    let chat_msg = http_post_message(bound, "/v1/chat/completions", "model-check-token", chat);
+    assert!(
+        chat_msg.contains("chatcmpl-fake"),
+        "real non-stream chat must still reach sidecar, got {chat_msg:?}"
     );
     runtime.stop();
 }
