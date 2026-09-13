@@ -38,8 +38,27 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
     }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ object: "list", data: [] }));
+    const reply = () => {
+      if (req.method === "POST" && path === "/v1/chat/completions") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            id: "chatcmpl-fake",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          }),
+        );
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ object: "list", data: [] }));
+    };
+    if (req.method === "POST") {
+      req.on("data", () => {});
+      req.on("end", reply);
+      return;
+    }
+    reply();
     return;
   }
 

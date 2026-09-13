@@ -640,6 +640,45 @@ fn bound_port_tells_caller_to_close_after_one_round() {
     runtime.stop();
 }
 
+#[test]
+fn bound_port_answers_expect_continue_so_post_body_can_follow() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-expect-continue-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("expect-continue-token").unwrap();
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 45450),
+        store,
+    );
+    let bound = runtime.start().expect("Start Bridge");
+    let body = r#"{"model":"probe","messages":[{"role":"user","content":"hi"}]}"#;
+    let mut stream = TcpStream::connect((BIND_HOST, bound)).expect("connect Bound Port");
+    let headers = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {BIND_HOST}:{bound}\r\nAuthorization: Bearer expect-continue-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(headers.as_bytes()).unwrap();
+    let continue_msg = read_one_http_message(&mut stream);
+    assert!(
+        continue_msg.contains("100"),
+        "Caller waiting on Expect: 100-continue must receive 100 Continue, got {continue_msg:?}"
+    );
+    stream.write_all(body.as_bytes()).unwrap();
+    let final_msg = read_one_http_message(&mut stream);
+    assert!(
+        final_msg.contains("200"),
+        "POST body after 100 Continue must reach sidecar, got {final_msg:?}"
+    );
+    runtime.stop();
+}
+
 fn wait_for_summaries(
     runtime: &BridgeRuntime,
     min: usize,

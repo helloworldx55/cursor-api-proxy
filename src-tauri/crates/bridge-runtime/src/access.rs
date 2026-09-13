@@ -139,15 +139,23 @@ fn forward_one(
     let (method, path) = parse_request_line(&request_headers.text)
         .unwrap_or_else(|| ("UNKNOWN".into(), "/".into()));
 
+    if expects_continue(&request_headers.text) {
+        client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+        client.flush()?;
+    }
+
     let mut sidecar = TcpStream::connect((BIND_HOST, sidecar_port))?;
     sidecar.set_read_timeout(Some(Duration::from_secs(300)))?;
     sidecar.set_write_timeout(Some(Duration::from_secs(300)))?;
-    forward_message(&mut client, &mut sidecar, &request_headers)?;
+    let outbound = HeaderBlock {
+        text: strip_header(&request_headers.text, "expect"),
+        extra: request_headers.extra,
+    };
+    forward_message(&mut client, &mut sidecar, &outbound, false)?;
 
-    let mut response_headers = read_headers(&mut sidecar)?;
-    let status = parse_status(&response_headers.text).unwrap_or(0);
+    let (mut response_headers, status) = read_final_headers(&mut sidecar)?;
     response_headers.text = force_connection_close(&response_headers.text);
-    forward_message(&mut sidecar, &mut client, &response_headers)?;
+    forward_message(&mut sidecar, &mut client, &response_headers, true)?;
 
     if let Ok(mut store) = store.lock() {
         store.record(RequestSummary {
@@ -168,9 +176,15 @@ struct HeaderBlock {
 }
 
 fn read_headers(stream: &mut TcpStream) -> std::io::Result<HeaderBlock> {
-    let mut buf = Vec::new();
+    read_headers_from(stream, Vec::new())
+}
+
+fn read_headers_from(stream: &mut TcpStream, mut buf: Vec<u8>) -> std::io::Result<HeaderBlock> {
     let mut tmp = [0u8; 512];
     let header_end = loop {
+        if let Some(end) = find_header_end(&buf) {
+            break end;
+        }
         let n = stream.read(&mut tmp)?;
         if n == 0 {
             return Err(std::io::Error::new(
@@ -179,9 +193,6 @@ fn read_headers(stream: &mut TcpStream) -> std::io::Result<HeaderBlock> {
             ));
         }
         buf.extend_from_slice(&tmp[..n]);
-        if let Some(end) = find_header_end(&buf) {
-            break end;
-        }
         if buf.len() > 64 * 1024 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -199,6 +210,7 @@ fn forward_message<R: Read, W: Write>(
     src: &mut R,
     dst: &mut W,
     headers: &HeaderBlock,
+    until_close: bool,
 ) -> std::io::Result<()> {
     dst.write_all(headers.text.as_bytes())?;
     let mut body = Cursor::new(headers.extra.clone()).chain(src);
@@ -206,6 +218,8 @@ fn forward_message<R: Read, W: Write>(
         copy_n(&mut body, dst, length)?;
     } else if is_chunked(&headers.text) {
         copy_chunked(&mut body, dst)?;
+    } else if until_close {
+        std::io::copy(&mut body, dst)?;
     }
     dst.flush()?;
     Ok(())
@@ -217,7 +231,10 @@ fn copy_n<R: Read, W: Write>(src: &mut R, dst: &mut W, mut n: usize) -> std::io:
         let want = n.min(buf.len());
         let read = src.read(&mut buf[..want])?;
         if read == 0 {
-            break;
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "unexpected eof while copying body",
+            ));
         }
         dst.write_all(&buf[..read])?;
         n -= read;
@@ -241,6 +258,7 @@ fn copy_chunked<R: Read, W: Write>(src: &mut R, dst: &mut W) -> std::io::Result<
         let mut crlf = [0u8; 2];
         src.read_exact(&mut crlf)?;
         dst.write_all(&crlf)?;
+        dst.flush()?;
         if size == 0 {
             break;
         }
@@ -293,6 +311,48 @@ fn parse_status(headers: &str) -> Option<u16> {
     headers.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
+fn expects_continue(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        line.split_once(':')
+            .map(|(name, value)| {
+                name.eq_ignore_ascii_case("expect")
+                    && value.trim().eq_ignore_ascii_case("100-continue")
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn strip_header(headers: &str, drop_name: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in headers.split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, _)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case(drop_name) {
+                continue;
+            }
+        }
+        lines.push(line.to_string());
+    }
+    let mut out = lines.join("\r\n");
+    out.push_str("\r\n\r\n");
+    out
+}
+
+fn read_final_headers(stream: &mut TcpStream) -> std::io::Result<(HeaderBlock, u16)> {
+    let mut leftover = Vec::new();
+    loop {
+        let headers = read_headers_from(stream, leftover)?;
+        let status = parse_status(&headers.text).unwrap_or(0);
+        if (100..200).contains(&status) {
+            leftover = headers.extra;
+            continue;
+        }
+        return Ok((headers, status));
+    }
+}
+
 fn force_connection_close(headers: &str) -> String {
     let mut saw_connection = false;
     let mut lines: Vec<String> = Vec::new();
@@ -324,7 +384,9 @@ fn force_connection_close(headers: &str) -> String {
 
 fn content_length(headers: &str) -> Option<usize> {
     for line in headers.lines() {
-        let (name, value) = line.split_once(':')?;
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
         if name.eq_ignore_ascii_case("content-length") {
             return value.trim().parse().ok();
         }
