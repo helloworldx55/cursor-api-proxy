@@ -26,6 +26,7 @@ const server = http.createServer((req, res) => {
         has_cursor_api_key: Boolean(cursorApiKey),
         chat_only_workspace: process.env.CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE ?? "",
         prompt_via_stdin: process.env.CURSOR_BRIDGE_PROMPT_VIA_STDIN ?? "",
+        force: process.env.CURSOR_BRIDGE_FORCE ?? "",
       }),
     );
     return;

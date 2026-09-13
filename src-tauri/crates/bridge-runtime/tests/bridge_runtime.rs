@@ -487,6 +487,10 @@ fn start_keeps_agent_cli_login_visible_to_the_sidecar() {
         body.contains("\"prompt_via_stdin\":\"true\""),
         "sidecar must send the prompt on stdin to avoid Windows CreateProcess truncation, got: {body}"
     );
+    assert!(
+        body.contains("\"force\":\"true\""),
+        "sidecar must pass --force so Agent CLI trusts the Bound Port workspace, got: {body}"
+    );
     runtime.stop();
 }
 
