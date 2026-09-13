@@ -31,110 +31,125 @@
         <p id="wizard-error" class="error" hidden></p>
       </section>
 
-      <section id="release-banner" class="copy-card" hidden>
-        <p class="label">Release</p>
-        <p id="release-message">正在检查 GitHub Releases…</p>
-        <div class="actions">
-          <a id="release-download" class="button" href="#" target="_blank" rel="noreferrer">下载</a>
-          <button id="dismiss-release" type="button" class="ghost">忽略</button>
+      <div id="shell" class="shell" hidden>
+        <nav id="sidebar" class="sidebar" aria-label="Sidebar"></nav>
+        <div class="panes">
+          <section id="pane-bridge" hidden>
+            <p id="error" class="error" hidden></p>
+            <section class="status-card" aria-live="polite">
+              <p class="label">状态</p>
+              <p id="health">未启动</p>
+              <p id="cli-block" class="disclaimer" hidden></p>
+            </section>
+
+            <div class="actions">
+              <button id="redetect-cli" type="button" class="ghost">重新检测 Agent CLI</button>
+            </div>
+
+            <section class="ports">
+              <label>
+                Preferred Port
+                <input id="preferred-port" type="number" min="1" max="65535" value="8765" />
+              </label>
+              <div>
+                <p class="label">Bound Port</p>
+                <p id="bound-port">—</p>
+              </div>
+              <div id="bridge-defaults">
+                <label>
+                  Bridge Mode
+                  <select id="bridge-mode">
+                    <option value="ask">问答</option>
+                    <option value="agent" selected>智能体</option>
+                    <option value="plan">计划</option>
+                  </select>
+                </label>
+                <label class="bridge-workspace-field">
+                  Bridge Workspace
+                  <input id="bridge-workspace" type="text" spellcheck="false" />
+                  <button id="pick-bridge-workspace" type="button" class="ghost">选择目录</button>
+                </label>
+                <p id="bridge-apply-hint" class="disclaimer">
+                  更改 Bridge Mode 或 Bridge Workspace 后，下次启动 Bridge 才生效。Caller 仍可用
+                  X-Cursor-Workspace 指到此目录内的子目录。
+                </p>
+              </div>
+            </section>
+
+            <div class="actions">
+              <button id="start" type="button">启动</button>
+              <button id="stop" type="button" class="ghost">停止</button>
+            </div>
+          </section>
+
+          <section id="pane-credentials" class="copy-card" hidden>
+            <p class="label">Cursor API Key / Agent CLI 登录</p>
+            <p id="credential-status">正在检测…</p>
+            <label>
+              Cursor API Key
+              <input
+                id="cursor-api-key"
+                type="password"
+                autocomplete="off"
+                placeholder="从 Cursor Dashboard 粘贴；已 Agent CLI 登录则不必填写"
+              />
+            </label>
+            <div class="actions">
+              <button id="save-key" type="button">保存到凭据库</button>
+            </div>
+          </section>
+
+          <section id="pane-caller" class="copy-card" hidden>
+            <p class="label">Caller 配置</p>
+            <textarea
+              id="caller-config"
+              readonly
+              rows="4"
+              placeholder="启动 Bridge 后在此显示 Base URL；Bridge Token 只写入剪贴板"
+            ></textarea>
+            <div class="actions">
+              <button id="copy-config" type="button" disabled>复制 Caller 配置</button>
+              <button id="rotate-token" type="button" class="ghost">轮换 Bridge Token</button>
+            </div>
+          </section>
+
+          <section id="pane-records" class="copy-card" hidden>
+            <p class="label">Request Summary</p>
+            <ul id="request-summaries" class="summary-list"></ul>
+            <p class="label">滚动日志</p>
+            <textarea id="bridge-log" readonly rows="8" placeholder="Bridge 启动后在此显示滚动日志"></textarea>
+            <div class="actions">
+              <button id="clear-records" type="button" class="ghost">清空 Request Summary 与日志</button>
+            </div>
+          </section>
+
+          <section id="pane-autostart" class="copy-card" hidden>
+            <p class="label">Autostart</p>
+            <p id="autostart-warning" class="disclaimer"></p>
+            <label class="check">
+              <input id="autostart" type="checkbox" />
+              登录 Windows 时启动这份 exe
+            </label>
+          </section>
+
+          <section id="pane-preferences" hidden>
+            <section id="release-banner" class="copy-card" hidden>
+              <p class="label">Release</p>
+              <p id="release-message">正在检查 GitHub Releases…</p>
+              <div class="actions">
+                <a id="release-download" class="button" href="#" target="_blank" rel="noreferrer">下载</a>
+                <button id="dismiss-release" type="button" class="ghost">忽略</button>
+              </div>
+            </section>
+            <section id="preferences-idle" class="copy-card" hidden>
+              <p class="label">偏好设置</p>
+              <p class="disclaimer">
+                当前没有可用的 Release 更新。主题和界面语言尚未提供，以后仍会放在本页。
+              </p>
+            </section>
+          </section>
         </div>
-      </section>
-
-      <section class="status-card" aria-live="polite">
-        <p class="label">状态</p>
-        <p id="health">未启动</p>
-        <p id="cli-block" class="disclaimer" hidden></p>
-        <p id="error" class="error" hidden></p>
-      </section>
-
-      <div class="actions">
-        <button id="redetect-cli" type="button" class="ghost">重新检测 Agent CLI</button>
       </div>
-
-      <section class="ports">
-        <label>
-          Preferred Port
-          <input id="preferred-port" type="number" min="1" max="65535" value="8765" />
-        </label>
-        <div>
-          <p class="label">Bound Port</p>
-          <p id="bound-port">—</p>
-        </div>
-        <div id="bridge-defaults" hidden>
-          <label>
-            Bridge Mode
-            <select id="bridge-mode">
-              <option value="ask">问答</option>
-              <option value="agent" selected>智能体</option>
-              <option value="plan">计划</option>
-            </select>
-          </label>
-          <label class="bridge-workspace-field">
-            Bridge Workspace
-            <input id="bridge-workspace" type="text" spellcheck="false" />
-            <button id="pick-bridge-workspace" type="button" class="ghost">选择目录</button>
-          </label>
-          <p id="bridge-apply-hint" class="disclaimer">
-            更改 Bridge Mode 或 Bridge Workspace 后，下次启动 Bridge 才生效。Caller 仍可用
-            X-Cursor-Workspace 指到此目录内的子目录。
-          </p>
-        </div>
-      </section>
-
-      <div class="actions">
-        <button id="start" type="button">启动</button>
-        <button id="stop" type="button" class="ghost">停止</button>
-      </div>
-
-      <section class="copy-card">
-        <p class="label">Cursor API Key / Agent CLI 登录</p>
-        <p id="credential-status">正在检测…</p>
-        <label>
-          Cursor API Key
-          <input
-            id="cursor-api-key"
-            type="password"
-            autocomplete="off"
-            placeholder="从 Cursor Dashboard 粘贴；已 Agent CLI 登录则不必填写"
-          />
-        </label>
-        <div class="actions">
-          <button id="save-key" type="button">保存到凭据库</button>
-        </div>
-      </section>
-
-      <section class="copy-card">
-        <p class="label">Caller 配置</p>
-        <textarea
-          id="caller-config"
-          readonly
-          rows="4"
-          placeholder="启动 Bridge 后在此显示 Base URL；Bridge Token 只写入剪贴板"
-        ></textarea>
-        <div class="actions">
-          <button id="copy-config" type="button" disabled>复制 Caller 配置</button>
-          <button id="rotate-token" type="button" class="ghost">轮换 Bridge Token</button>
-        </div>
-      </section>
-
-      <section id="autostart-settings" class="copy-card" hidden>
-        <p class="label">Autostart</p>
-        <p id="autostart-warning" class="disclaimer"></p>
-        <label class="check">
-          <input id="autostart" type="checkbox" />
-          登录 Windows 时启动这份 exe
-        </label>
-      </section>
-
-      <section class="copy-card">
-        <p class="label">Request Summary</p>
-        <ul id="request-summaries" class="summary-list"></ul>
-        <p class="label">滚动日志</p>
-        <textarea id="bridge-log" readonly rows="8" placeholder="Bridge 启动后在此显示滚动日志"></textarea>
-        <div class="actions">
-          <button id="clear-records" type="button" class="ghost">清空 Request Summary 与日志</button>
-        </div>
-      </section>
     </main>
   </body>
 </html>

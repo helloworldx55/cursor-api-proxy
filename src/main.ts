@@ -30,8 +30,6 @@ const bridgeWorkspaceEl = () =>
   document.querySelector<HTMLInputElement>("#bridge-workspace");
 const pickBridgeWorkspaceBtn = () =>
   document.querySelector<HTMLButtonElement>("#pick-bridge-workspace");
-const bridgeDefaultsEl = () =>
-  document.querySelector<HTMLElement>("#bridge-defaults");
 const startBtn = () => document.querySelector<HTMLButtonElement>("#start");
 const stopBtn = () => document.querySelector<HTMLButtonElement>("#stop");
 const copyConfigBtn = () =>
@@ -60,11 +58,11 @@ const completeWizardBtn = () =>
   document.querySelector<HTMLButtonElement>("#complete-wizard");
 const autostartEl = () => document.querySelector<HTMLInputElement>("#autostart");
 const autostartWarningEl = () => document.querySelector("#autostart-warning");
-const autostartSettingsEl = () =>
-  document.querySelector<HTMLElement>("#autostart-settings");
 const cliBlockEl = () => document.querySelector<HTMLElement>("#cli-block");
 const redetectCliBtn = () =>
   document.querySelector<HTMLButtonElement>("#redetect-cli");
+const shellEl = () => document.querySelector<HTMLElement>("#shell");
+const sidebarEl = () => document.querySelector<HTMLElement>("#sidebar");
 const releaseBannerEl = () =>
   document.querySelector<HTMLElement>("#release-banner");
 const releaseMessageEl = () => document.querySelector("#release-message");
@@ -72,8 +70,11 @@ const releaseDownloadEl = () =>
   document.querySelector<HTMLAnchorElement>("#release-download");
 const dismissReleaseBtn = () =>
   document.querySelector<HTMLButtonElement>("#dismiss-release");
+const preferencesIdleEl = () =>
+  document.querySelector<HTMLElement>("#preferences-idle");
 
-let releaseDismissed = false;
+let releaseIgnored = false;
+let selected: SidebarItem | null = null;
 let wizardBusy = false;
 let wizardStickyError = "";
 
@@ -108,11 +109,25 @@ type SetupStatus = {
   move_folder_warning: string;
 };
 
+type SidebarItem =
+  | "bridge"
+  | "credentials"
+  | "caller"
+  | "records"
+  | "autostart"
+  | "preferences";
+
+type ConsoleShellView = {
+  mode: "wizard" | "sidebar";
+  nav: { id: SidebarItem; label: string }[];
+  selected: SidebarItem | null;
+  pane: SidebarItem | null;
+  preferences_shows_update: boolean;
+  setup: SetupStatus;
+  update_prompt: UpdatePrompt | null;
+};
+
 function renderSetup(status: SetupStatus) {
-  const wizard = wizardEl();
-  if (wizard) {
-    wizard.hidden = status.completed && !wizardBusy && !wizardStickyError;
-  }
   const prereqs = wizardPrereqsEl();
   if (prereqs) {
     const cli = status.agent_cli_present
@@ -143,10 +158,6 @@ function renderSetup(status: SetupStatus) {
       error.textContent = "";
     }
   }
-  const autostartSettings = autostartSettingsEl();
-  if (autostartSettings) autostartSettings.hidden = !status.autostart_offered;
-  const bridgeDefaults = bridgeDefaultsEl();
-  if (bridgeDefaults) bridgeDefaults.hidden = !status.completed;
   const autostart = autostartEl();
   if (autostart && document.activeElement !== autostart) {
     autostart.checked = status.autostart_enabled;
@@ -159,12 +170,75 @@ function renderSetup(status: SetupStatus) {
   }
 }
 
+function renderNav(view: ConsoleShellView) {
+  const nav = sidebarEl();
+  if (!nav) return;
+  nav.replaceChildren();
+  for (const item of view.nav) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = item.label;
+    if (item.id === view.selected) {
+      button.setAttribute("aria-current", "page");
+    }
+    button.addEventListener("click", () => {
+      selected = item.id;
+      void refreshShell();
+    });
+    nav.append(button);
+  }
+}
+
+function renderPanes(view: ConsoleShellView) {
+  const activeId = `pane-${view.pane ?? ""}`;
+  const panes = document.querySelectorAll<HTMLElement>("[id^='pane-']");
+  for (const pane of panes) {
+    pane.hidden = pane.id !== activeId;
+  }
+  const active = document.getElementById(activeId);
+  const error = errorEl();
+  if (active && error && error.parentElement !== active) {
+    error.hidden = true;
+    error.textContent = "";
+    active.prepend(error);
+  }
+}
+
+function renderShell(view: ConsoleShellView) {
+  const stayOnWizard = view.mode === "wizard" || wizardBusy || !!wizardStickyError;
+  const wizard = wizardEl();
+  if (wizard) wizard.hidden = !stayOnWizard;
+  const shell = shellEl();
+  if (shell) shell.hidden = stayOnWizard;
+  if (!stayOnWizard) {
+    renderNav(view);
+    renderPanes(view);
+  }
+  renderRelease(view);
+}
+
+function showWizardOnly() {
+  const wizard = wizardEl();
+  if (wizard) wizard.hidden = false;
+  const shell = shellEl();
+  if (shell) shell.hidden = true;
+}
+
+async function refreshShell() {
+  const view = await invoke<ConsoleShellView>("console_shell", {
+    selected,
+    releaseIgnored,
+  });
+  selected = view.selected;
+  renderSetup(view.setup);
+  renderShell(view);
+}
+
 async function refreshSetup() {
   try {
-    renderSetup(await invoke<SetupStatus>("wizard_status"));
+    await refreshShell();
   } catch (err) {
-    const wizard = wizardEl();
-    if (wizard) wizard.hidden = false;
+    showWizardOnly();
     wizardStickyError = String(err);
     const error = wizardErrorEl();
     if (error) {
@@ -191,17 +265,16 @@ async function completeWizard() {
     error.textContent = "";
   }
   try {
-    const status = await invoke<SetupStatus>("complete_wizard", {
+    await invoke<SetupStatus>("complete_wizard", {
       enableAutostart: enable,
     });
     wizardBusy = false;
     wizardStickyError = "";
-    renderSetup(status);
+    await refreshShell();
   } catch (err) {
     wizardBusy = false;
     wizardStickyError = String(err);
-    const wizard = wizardEl();
-    if (wizard) wizard.hidden = false;
+    showWizardOnly();
     if (error) {
       error.hidden = false;
       error.textContent = wizardStickyError;
@@ -397,31 +470,32 @@ async function saveCursorApiKey() {
   }
 }
 
-function renderRelease(prompt: UpdatePrompt | null) {
+function renderRelease(view: ConsoleShellView) {
   const banner = releaseBannerEl();
-  if (!banner) return;
-  if (releaseDismissed || !prompt) {
-    banner.hidden = true;
+  const idle = preferencesIdleEl();
+  if (view.preferences_shows_update && view.update_prompt) {
+    if (banner) {
+      banner.hidden = false;
+      const message = releaseMessageEl();
+      if (message) {
+        message.textContent = `发现新 Release ${view.update_prompt.latest_version}。请自行下载，Console 不会替换正在运行的 exe。`;
+      }
+      const link = releaseDownloadEl();
+      if (link) link.href = view.update_prompt.download_url;
+    }
+    if (idle) idle.hidden = true;
     return;
   }
-  banner.hidden = false;
-  const message = releaseMessageEl();
-  if (message) {
-    message.textContent = `发现新 Release ${prompt.latest_version}。请自行下载，Console 不会替换正在运行的 exe。`;
-  }
-  const link = releaseDownloadEl();
-  if (link) link.href = prompt.download_url;
+  if (banner) banner.hidden = true;
+  if (idle) idle.hidden = false;
 }
 
 async function refreshRelease() {
-  if (releaseDismissed) {
-    renderRelease(null);
-    return;
-  }
   try {
-    renderRelease(await invoke<UpdatePrompt | null>("release_check"));
+    await invoke("release_check");
+    await refreshShell();
   } catch {
-    renderRelease(null);
+    // Preferences can stay idle until a later check succeeds.
   }
 }
 
@@ -558,8 +632,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     void invoke<BridgeStatusView>("pick_bridge_workspace").then(render);
   });
   dismissReleaseBtn()?.addEventListener("click", () => {
-    releaseDismissed = true;
-    renderRelease(null);
+    releaseIgnored = true;
+    void refreshShell();
+  });
+  await listen("console-opened", () => {
+    selected = null;
+    void refreshShell();
   });
   await listen<BridgeStatusView>("bridge-status", (event) => {
     render(event.payload);
@@ -572,5 +650,5 @@ window.addEventListener("DOMContentLoaded", async () => {
     void refreshRecords();
   }, 2000);
   await refresh();
-  await refreshRelease();
+  void refreshRelease();
 });

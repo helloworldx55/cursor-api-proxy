@@ -19,10 +19,69 @@ body {
     #14131a;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .panel {
-  max-width: 520px;
+  max-width: none;
   margin: 0 auto;
   padding: 36px 28px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-height: 100vh;
+}
+
+#wizard {
+  max-width: 520px;
+}
+
+.shell {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  min-width: 0;
+}
+
+.sidebar {
+  flex: 0 0 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 12px 4px 0;
+  border-right: 1px solid #2e2c36;
+}
+
+.sidebar button {
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: transparent;
+  color: #ece7dc;
+  text-align: left;
+  padding: 10px 12px;
+}
+
+.sidebar button[aria-current="page"] {
+  background: #2a2732;
+  color: #e4c38a;
+}
+
+.panes {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+#pane-bridge {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+#pane-preferences {
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -100,10 +159,6 @@ h1 {
 #bridge-defaults .bridge-workspace-field,
 #bridge-defaults #bridge-apply-hint {
   grid-column: 1 / -1;
-}
-
-#bridge-defaults[hidden] {
-  display: none;
 }
 
 .bridge-workspace-field button {

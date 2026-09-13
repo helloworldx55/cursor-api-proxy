@@ -2,15 +2,15 @@ mod commands;
 
 use commands::{
     bridge_log, bridge_status, caller_config, caller_config_display, clear_bridge_records,
-    complete_wizard, credential_status, current_status, pick_bridge_workspace, production_config,
-    redetect_agent_cli, release_check, request_summaries, rotate_bridge_token, save_cursor_api_key,
-    set_autostart, set_bridge_mode, set_bridge_workspace, set_preferred_port, show_settings,
-    start_bridge, start_runtime, stop_bridge, stop_runtime, wizard_status, ConsoleState,
-    TrayStartItem,
+    complete_wizard, console_shell, credential_status, current_status, pick_bridge_workspace,
+    production_config, redetect_agent_cli, release_check, request_summaries, rotate_bridge_token,
+    save_cursor_api_key, set_autostart, set_bridge_mode, set_bridge_workspace, set_preferred_port,
+    show_settings, start_bridge, start_runtime, stop_bridge, stop_runtime, wizard_status,
+    ConsoleState, TrayStartItem,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -50,7 +50,8 @@ pub fn run() {
             set_bridge_mode,
             set_bridge_workspace,
             pick_bridge_workspace,
-            release_check
+            release_check,
+            console_shell
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "打开设置", true, None::<&str>)?;
@@ -105,9 +106,23 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    if let Some(state) = window.app_handle().try_state::<ConsoleState>() {
+                        state.mark_settings_hidden();
+                    }
+                }
+                tauri::WindowEvent::Focused(true) => {
+                    let app = window.app_handle();
+                    if let Some(state) = app.try_state::<ConsoleState>() {
+                        if state.take_settings_hidden() {
+                            let _ = app.emit("console-opened", ());
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!())

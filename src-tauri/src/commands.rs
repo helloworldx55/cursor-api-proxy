@@ -6,7 +6,7 @@ use cursor2api_bridge_runtime::{
     find_executable, system_path_env, BridgeMode, BridgeRuntime, BridgeState, BridgeTokenStore,
     CursorApiKeyStore, OperatorHealth, RuntimeConfig, DEFAULT_PREFERRED_PORT,
 };
-use cursor2api_console_setup::{self as setup, SetupPaths, SetupStatus};
+use cursor2api_console_setup::{self as setup, SetupPaths, SetupStatus, ShellView, SidebarItem};
 use cursor2api_release_check::{
     check_for_update, GitHubReleaseSource, UpdatePrompt,
 };
@@ -16,10 +16,25 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct TrayStartItem(pub tauri::menu::MenuItem<tauri::Wry>);
 
+struct ReleasePromptCache {
+    loaded: bool,
+    prompt: Option<UpdatePrompt>,
+}
+
 pub struct ConsoleState {
     runtime: Mutex<BridgeRuntime>,
     last_error: Mutex<Option<String>>,
     setup: SetupPaths,
+    release_prompt: Mutex<ReleasePromptCache>,
+    settings_hidden: Mutex<bool>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ConsoleShellView {
+    #[serde(flatten)]
+    pub view: ShellView,
+    pub setup: SetupStatus,
+    pub update_prompt: Option<UpdatePrompt>,
 }
 
 #[derive(Clone, Serialize)]
@@ -52,11 +67,27 @@ impl ConsoleState {
             )),
             last_error: Mutex::new(None),
             setup: setup::production_paths(app_data_dir()),
+            release_prompt: Mutex::new(ReleasePromptCache {
+                loaded: false,
+                prompt: None,
+            }),
+            settings_hidden: Mutex::new(false),
         }
     }
 
     pub fn set_last_error(&self, message: Option<String>) {
         *self.last_error.lock().expect("无法写入最近错误") = message;
+    }
+
+    pub fn mark_settings_hidden(&self) {
+        *self.settings_hidden.lock().expect("无法写入设置窗状态") = true;
+    }
+
+    pub fn take_settings_hidden(&self) -> bool {
+        let mut hidden = self.settings_hidden.lock().expect("无法读取设置窗状态");
+        let was_hidden = *hidden;
+        *hidden = false;
+        was_hidden
     }
 
     fn snapshot(&self) -> BridgeStatusView {
@@ -517,15 +548,56 @@ pub fn set_autostart(state: State<ConsoleState>, enabled: bool) -> Result<SetupS
     setup_view(&state)
 }
 
-#[tauri::command]
-pub fn release_check() -> Result<Option<UpdatePrompt>, String> {
+fn cached_release_prompt(state: &ConsoleState) -> Option<UpdatePrompt> {
+    state
+        .release_prompt
+        .lock()
+        .ok()
+        .and_then(|cache| cache.prompt.clone())
+}
+
+fn load_release_prompt(state: &ConsoleState) -> Result<Option<UpdatePrompt>, String> {
+    let mut cache = state.release_prompt.lock().map_err(|_| console_busy())?;
+    if cache.loaded {
+        return Ok(cache.prompt.clone());
+    }
     match check_for_update(
         env!("CARGO_PKG_VERSION"),
         &GitHubReleaseSource::default(),
     ) {
-        Ok(prompt) => Ok(prompt),
+        Ok(prompt) => {
+            cache.loaded = true;
+            cache.prompt = prompt.clone();
+            Ok(prompt)
+        }
         Err(_) => Ok(None),
     }
+}
+
+#[tauri::command]
+pub fn release_check(state: State<ConsoleState>) -> Result<Option<UpdatePrompt>, String> {
+    load_release_prompt(&state)
+}
+
+#[tauri::command]
+pub fn console_shell(
+    state: State<ConsoleState>,
+    selected: Option<SidebarItem>,
+    release_ignored: bool,
+) -> Result<ConsoleShellView, String> {
+    let setup = setup_view(&state)?;
+    let prompt = cached_release_prompt(&state);
+    let view = setup::shell_view(&setup, selected, prompt.as_ref(), release_ignored);
+    let update_prompt = if view.preferences_shows_update {
+        prompt
+    } else {
+        None
+    };
+    Ok(ConsoleShellView {
+        view,
+        setup,
+        update_prompt,
+    })
 }
 
 pub fn show_settings(app: &AppHandle) {
@@ -533,4 +605,5 @@ pub fn show_settings(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+    let _ = app.emit("console-opened", ());
 }

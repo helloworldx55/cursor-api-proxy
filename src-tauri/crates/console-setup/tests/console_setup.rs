@@ -199,11 +199,22 @@ fn setup_status(completed: bool) -> SetupStatus {
 
 #[test]
 fn incomplete_wizard_is_full_window_without_sidebar() {
-    let view = shell_view(&setup_status(false), None, None::<&()>, false);
+    let view = shell_view(
+        &setup_status(false),
+        Some(SidebarItem::Caller),
+        Some(&()),
+        false,
+    );
     assert_eq!(view.mode, ShellMode::Wizard);
     assert!(
         view.nav.is_empty(),
         "incomplete wizard must not show Sidebar items"
+    );
+    assert_eq!(view.selected, None);
+    assert_eq!(view.pane, None);
+    assert!(
+        !view.preferences_shows_update,
+        "Release prompt must not occupy the wizard"
     );
 }
 
@@ -235,6 +246,18 @@ fn opening_console_defaults_to_bridge() {
     let view = shell_view(&setup_status(true), None, None::<&()>, false);
     assert_eq!(view.selected, Some(SidebarItem::Bridge));
     assert_eq!(view.pane, Some(SidebarItem::Bridge));
+}
+
+#[test]
+fn selecting_a_sidebar_item_shows_that_pane() {
+    let view = shell_view(
+        &setup_status(true),
+        Some(SidebarItem::Caller),
+        None::<&()>,
+        false,
+    );
+    assert_eq!(view.selected, Some(SidebarItem::Caller));
+    assert_eq!(view.pane, Some(SidebarItem::Caller));
 }
 
 #[test]
