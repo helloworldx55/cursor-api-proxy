@@ -315,6 +315,8 @@ impl BridgeRuntime {
             .env("CURSOR_BRIDGE_HOST", BIND_HOST)
             .env("CURSOR_BRIDGE_PORT", sidecar_port.to_string())
             .env("CURSOR_BRIDGE_API_KEY", &token)
+            .env("CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE", "false")
+            .env("CURSOR_BRIDGE_PROMPT_VIA_STDIN", "true")
             .stdin(Stdio::null())
             .stdout(if capture_logs {
                 Stdio::piped()

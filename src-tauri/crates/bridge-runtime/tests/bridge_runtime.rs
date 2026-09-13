@@ -463,6 +463,34 @@ fn start_without_cursor_api_key_when_agent_cli_is_logged_in() {
 }
 
 #[test]
+fn start_keeps_agent_cli_login_visible_to_the_sidecar() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-chat-only-env-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45460,
+    ));
+    let bound = runtime.start().expect("Start Bridge");
+    let body = http_json(bound, "/health");
+    assert!(
+        body.contains("\"chat_only_workspace\":\"false\""),
+        "sidecar must not isolate HOME/USERPROFILE away from Agent CLI login, got: {body}"
+    );
+    assert!(
+        body.contains("\"prompt_via_stdin\":\"true\""),
+        "sidecar must send the prompt on stdin to avoid Windows CreateProcess truncation, got: {body}"
+    );
+    runtime.stop();
+}
+
+#[test]
 fn start_is_refused_without_cursor_api_key_or_agent_cli_login() {
     let dir = std::env::temp_dir().join(format!("cursor2api-no-cred-{}", std::process::id()));
     write_unauthenticated_agent_cli(&dir, "cursor-agent");
