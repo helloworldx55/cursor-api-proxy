@@ -15,7 +15,8 @@
       {
         "title": "cursor2api",
         "width": 740,
-        "height": 720
+        "height": 720,
+        "resizable": true
       }
     ],
     "security": {

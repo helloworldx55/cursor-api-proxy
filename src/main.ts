@@ -72,6 +72,14 @@ const dismissReleaseBtn = () =>
   document.querySelector<HTMLButtonElement>("#dismiss-release");
 const preferencesIdleEl = () =>
   document.querySelector<HTMLElement>("#preferences-idle");
+const preferencesIdleMessageEl = () =>
+  document.querySelector("#preferences-idle-message");
+const callerErrorEl = () =>
+  document.querySelector<HTMLElement>("#caller-error");
+const recordsErrorEl = () =>
+  document.querySelector<HTMLElement>("#records-error");
+const autostartErrorEl = () =>
+  document.querySelector<HTMLElement>("#autostart-error");
 
 let releaseIgnored = false;
 let selected: SidebarItem | null = null;
@@ -195,12 +203,16 @@ function renderPanes(view: ConsoleShellView) {
   for (const pane of panes) {
     pane.hidden = pane.id !== activeId;
   }
-  const active = document.getElementById(activeId);
-  const error = errorEl();
-  if (active && error && error.parentElement !== active) {
-    error.hidden = true;
-    error.textContent = "";
-    active.prepend(error);
+}
+
+function setError(el: HTMLElement | null, message: string) {
+  if (!el) return;
+  if (message) {
+    el.hidden = false;
+    el.textContent = message;
+  } else {
+    el.hidden = true;
+    el.textContent = "";
   }
 }
 
@@ -275,15 +287,12 @@ async function completeWizard() {
     wizardBusy = false;
     wizardStickyError = String(err);
     showWizardOnly();
-    if (error) {
-      error.hidden = false;
-      error.textContent = wizardStickyError;
-    }
+    setError(error, wizardStickyError);
     if (complete) {
       complete.disabled = false;
       complete.textContent = WIZARD_IDLE_LABEL;
+      complete.setAttribute("aria-busy", "false");
     }
-    await refreshSetup();
   }
 }
 
@@ -291,12 +300,9 @@ async function toggleAutostart() {
   const enabled = autostartEl()?.checked ?? false;
   try {
     renderSetup(await invoke<SetupStatus>("set_autostart", { enabled }));
+    setError(autostartErrorEl(), "");
   } catch (err) {
-    const error = errorEl();
-    if (error) {
-      error.hidden = false;
-      error.textContent = String(err);
-    }
+    setError(autostartErrorEl(), String(err));
     await refreshSetup();
   }
 }
@@ -343,12 +349,9 @@ async function refreshRecords() {
 async function clearRecords() {
   try {
     await invoke("clear_bridge_records");
+    setError(recordsErrorEl(), "");
   } catch (err) {
-    const error = errorEl();
-    if (error) {
-      error.hidden = false;
-      error.textContent = String(err);
-    }
+    setError(recordsErrorEl(), String(err));
   }
   await refreshRecords();
 }
@@ -473,6 +476,7 @@ async function saveCursorApiKey() {
 function renderRelease(view: ConsoleShellView) {
   const banner = releaseBannerEl();
   const idle = preferencesIdleEl();
+  const idleMessage = preferencesIdleMessageEl();
   if (view.preferences_shows_update && view.update_prompt) {
     if (banner) {
       banner.hidden = false;
@@ -488,6 +492,11 @@ function renderRelease(view: ConsoleShellView) {
   }
   if (banner) banner.hidden = true;
   if (idle) idle.hidden = false;
+  if (idleMessage) {
+    idleMessage.textContent = releaseIgnored
+      ? "这条 Release 更新已忽略。主题和界面语言尚未提供，以后仍会放在本页。"
+      : "当前没有可用的 Release 更新。主题和界面语言尚未提供，以后仍会放在本页。";
+  }
 }
 
 async function refreshRelease() {
@@ -539,12 +548,14 @@ async function rotateToken() {
     const status = await invoke<BridgeStatusView>("rotate_bridge_token");
     render(status);
     await refreshCallerConfig(status.running);
+    setError(callerErrorEl(), "");
   } catch (err) {
+    setError(callerErrorEl(), String(err));
     const status = await invoke<BridgeStatusView>("bridge_status").catch(
       () => null,
     );
     if (status) {
-      render({ ...status, error: String(err) });
+      render(status);
       await refreshCallerConfig(status.running);
     }
   }
@@ -557,11 +568,7 @@ async function redetectAgentCli() {
     await refreshCallerConfig(status.running);
     await refreshSetup();
   } catch (err) {
-    const error = errorEl();
-    if (error) {
-      error.hidden = false;
-      error.textContent = String(err);
-    }
+    setError(errorEl(), String(err));
   }
 }
 
@@ -580,12 +587,9 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (area) {
         area.value = await invoke<string>("caller_config_display");
       }
+      setError(callerErrorEl(), "");
     } catch (err) {
-      const error = errorEl();
-      if (error) {
-        error.hidden = false;
-        error.textContent = String(err);
-      }
+      setError(callerErrorEl(), String(err));
     }
   });
   rotateBtn()?.addEventListener("click", () => {
@@ -637,6 +641,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   await listen("console-opened", () => {
     selected = null;
+    wizardStickyError = "";
     void refreshShell();
   });
   await listen<BridgeStatusView>("bridge-status", (event) => {

@@ -100,6 +100,7 @@
           </section>
 
           <section id="pane-caller" class="copy-card" hidden>
+            <p id="caller-error" class="error" hidden></p>
             <p class="label">Caller 配置</p>
             <textarea
               id="caller-config"
@@ -114,6 +115,7 @@
           </section>
 
           <section id="pane-records" class="copy-card" hidden>
+            <p id="records-error" class="error" hidden></p>
             <p class="label">Request Summary</p>
             <ul id="request-summaries" class="summary-list"></ul>
             <p class="label">滚动日志</p>
@@ -124,6 +126,7 @@
           </section>
 
           <section id="pane-autostart" class="copy-card" hidden>
+            <p id="autostart-error" class="error" hidden></p>
             <p class="label">Autostart</p>
             <p id="autostart-warning" class="disclaimer"></p>
             <label class="check">
@@ -143,7 +146,7 @@
             </section>
             <section id="preferences-idle" class="copy-card" hidden>
               <p class="label">偏好设置</p>
-              <p class="disclaimer">
+              <p id="preferences-idle-message" class="disclaimer">
                 当前没有可用的 Release 更新。主题和界面语言尚未提供，以后仍会放在本页。
               </p>
             </section>
