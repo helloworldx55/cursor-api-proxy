@@ -15,6 +15,8 @@ type BridgeStatusView = {
   health: OperatorHealth;
   start_enabled: boolean;
   start_block_reason: string | null;
+  bridge_mode: "ask" | "agent" | "plan";
+  bridge_workspace: string;
 };
 
 const healthEl = () => document.querySelector("#health");
@@ -22,6 +24,14 @@ const errorEl = () => document.querySelector<HTMLElement>("#error");
 const boundEl = () => document.querySelector("#bound-port");
 const preferredEl = () =>
   document.querySelector<HTMLInputElement>("#preferred-port");
+const bridgeModeEl = () =>
+  document.querySelector<HTMLSelectElement>("#bridge-mode");
+const bridgeWorkspaceEl = () =>
+  document.querySelector<HTMLInputElement>("#bridge-workspace");
+const pickBridgeWorkspaceBtn = () =>
+  document.querySelector<HTMLButtonElement>("#pick-bridge-workspace");
+const bridgeDefaultsEl = () =>
+  document.querySelector<HTMLElement>("#bridge-defaults");
 const startBtn = () => document.querySelector<HTMLButtonElement>("#start");
 const stopBtn = () => document.querySelector<HTMLButtonElement>("#stop");
 const copyConfigBtn = () =>
@@ -135,6 +145,8 @@ function renderSetup(status: SetupStatus) {
   }
   const autostartSettings = autostartSettingsEl();
   if (autostartSettings) autostartSettings.hidden = !status.autostart_offered;
+  const bridgeDefaults = bridgeDefaultsEl();
+  if (bridgeDefaults) bridgeDefaults.hidden = !status.completed;
   const autostart = autostartEl();
   if (autostart && document.activeElement !== autostart) {
     autostart.checked = status.autostart_enabled;
@@ -313,6 +325,14 @@ function render(status: BridgeStatusView) {
   }
   if (preferred && document.activeElement !== preferred) {
     preferred.value = String(status.preferred_port);
+  }
+  const mode = bridgeModeEl();
+  if (mode && document.activeElement !== mode) {
+    mode.value = status.bridge_mode;
+  }
+  const workspace = bridgeWorkspaceEl();
+  if (workspace && document.activeElement !== workspace) {
+    workspace.value = status.bridge_workspace;
   }
   if (error) {
     const message =
@@ -521,6 +541,21 @@ window.addEventListener("DOMContentLoaded", async () => {
     void invoke<BridgeStatusView>("set_preferred_port", {
       preferredPort: preferred,
     }).then(render);
+  });
+  bridgeModeEl()?.addEventListener("change", () => {
+    const bridgeMode = bridgeModeEl()?.value || "agent";
+    void invoke<BridgeStatusView>("set_bridge_mode", {
+      bridgeMode,
+    }).then(render);
+  });
+  bridgeWorkspaceEl()?.addEventListener("change", () => {
+    const bridgeWorkspace = bridgeWorkspaceEl()?.value || "";
+    void invoke<BridgeStatusView>("set_bridge_workspace", {
+      bridgeWorkspace,
+    }).then(render);
+  });
+  pickBridgeWorkspaceBtn()?.addEventListener("click", () => {
+    void invoke<BridgeStatusView>("pick_bridge_workspace").then(render);
   });
   dismissReleaseBtn()?.addEventListener("click", () => {
     releaseDismissed = true;

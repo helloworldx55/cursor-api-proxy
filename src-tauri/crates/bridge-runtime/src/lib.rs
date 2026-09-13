@@ -16,6 +16,30 @@ pub const BIND_HOST: &str = "127.0.0.1";
 pub const MAX_REQUEST_SUMMARIES: usize = 200;
 pub const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BridgeMode {
+    Ask,
+    Agent,
+    Plan,
+}
+
+impl BridgeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Agent => "agent",
+            Self::Plan => "plan",
+        }
+    }
+}
+
+impl Default for BridgeMode {
+    fn default() -> Self {
+        Self::Agent
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub preferred_port: u16,
@@ -27,6 +51,11 @@ pub struct RuntimeConfig {
     pub summaries_path: Option<PathBuf>,
     pub max_log_bytes: u64,
     pub preferred_port_path: Option<PathBuf>,
+    pub bridge_mode: BridgeMode,
+    pub bridge_mode_path: Option<PathBuf>,
+    pub bridge_workspace: PathBuf,
+    pub default_bridge_workspace: PathBuf,
+    pub bridge_workspace_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -54,6 +83,8 @@ pub enum OperatorHealth {
 
 pub const AGENT_CLI_MISSING_MESSAGE: &str =
     "未在 PATH 上找到 Agent CLI（cursor-agent 或 agent），无法 Start Bridge。";
+pub const BRIDGE_WORKSPACE_MISSING_MESSAGE: &str =
+    "Bridge Workspace 不存在，请在 Bridge 页重新选择。";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartError {
@@ -62,6 +93,7 @@ pub enum StartError {
     SidecarFailed { message: String },
     HealthCheckTimeout,
     CursorCredentialMissing { message: String },
+    BridgeWorkspaceMissing { message: String },
 }
 
 impl std::fmt::Display for StartError {
@@ -76,6 +108,7 @@ impl std::fmt::Display for StartError {
                 write!(f, "Bridge 启动后未能在超时内响应 /health")
             }
             StartError::CursorCredentialMissing { message } => f.write_str(message),
+            StartError::BridgeWorkspaceMissing { message } => f.write_str(message),
         }
     }
 }
@@ -166,6 +199,11 @@ impl BridgeRuntime {
         let mut config = config;
         config.preferred_port =
             load_preferred_port(&config.preferred_port_path, config.preferred_port);
+        config.bridge_mode = load_bridge_mode(&config.bridge_mode_path, config.bridge_mode);
+        config.bridge_workspace = load_bridge_workspace(
+            &config.bridge_workspace_path,
+            config.default_bridge_workspace.clone(),
+        );
         Self {
             config,
             token_store,
@@ -228,15 +266,24 @@ impl BridgeRuntime {
     }
 
     pub fn start_enabled(&self) -> bool {
-        matches!(self.state(), BridgeState::Stopped) && self.agent_cli_present()
+        matches!(self.state(), BridgeState::Stopped)
+            && self.agent_cli_present()
+            && self.bridge_workspace_ready()
     }
 
     pub fn start_block_reason(&self) -> Option<String> {
-        if self.agent_cli_present() {
-            None
-        } else {
-            Some(AGENT_CLI_MISSING_MESSAGE.to_string())
+        if !self.agent_cli_present() {
+            return Some(AGENT_CLI_MISSING_MESSAGE.to_string());
         }
+        if !self.bridge_workspace_ready() {
+            return Some(BRIDGE_WORKSPACE_MISSING_MESSAGE.to_string());
+        }
+        None
+    }
+
+    fn bridge_workspace_ready(&self) -> bool {
+        self.config.bridge_workspace == self.config.default_bridge_workspace
+            || self.config.bridge_workspace.is_dir()
     }
 
     pub fn ensure_bridge_token(&self) -> Result<String, StartError> {
@@ -278,6 +325,28 @@ impl BridgeRuntime {
         persist_preferred_port(&self.config.preferred_port_path, preferred_port);
     }
 
+    pub fn bridge_mode(&self) -> BridgeMode {
+        self.config.bridge_mode
+    }
+
+    pub fn set_bridge_mode(&mut self, bridge_mode: BridgeMode) {
+        self.config.bridge_mode = bridge_mode;
+        persist_bridge_mode(&self.config.bridge_mode_path, bridge_mode);
+    }
+
+    pub fn bridge_workspace(&self) -> &Path {
+        &self.config.bridge_workspace
+    }
+
+    pub fn default_bridge_workspace(&self) -> &Path {
+        &self.config.default_bridge_workspace
+    }
+
+    pub fn set_bridge_workspace(&mut self, bridge_workspace: PathBuf) {
+        self.config.bridge_workspace = bridge_workspace.clone();
+        persist_bridge_workspace(&self.config.bridge_workspace_path, &bridge_workspace);
+    }
+
     pub fn start(&mut self) -> Result<u16, StartError> {
         self.stop();
 
@@ -307,6 +376,8 @@ impl BridgeRuntime {
             });
         }
 
+        let workspace = resolve_bridge_workspace(&self.config)?;
+
         let mut command = Command::new(&self.config.sidecar_program);
         let capture_logs = self.config.log_path.is_some();
         command
@@ -318,6 +389,8 @@ impl BridgeRuntime {
             .env("CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE", "false")
             .env("CURSOR_BRIDGE_PROMPT_VIA_STDIN", "true")
             .env("CURSOR_BRIDGE_FORCE", "true")
+            .env("CURSOR_BRIDGE_MODE", self.config.bridge_mode.as_str())
+            .env("CURSOR_BRIDGE_WORKSPACE", &workspace)
             .stdin(Stdio::null())
             .stdout(if capture_logs {
                 Stdio::piped()
@@ -624,6 +697,85 @@ fn persist_preferred_port(path: &Option<PathBuf>, preferred_port: u16) {
         serde_json::to_vec(&serde_json::json!({ "preferred_port": preferred_port }))
             .unwrap_or_default(),
     );
+}
+
+fn load_bridge_mode(path: &Option<PathBuf>, fallback: BridgeMode) -> BridgeMode {
+    let Some(path) = path else {
+        return fallback;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return fallback;
+    };
+    #[derive(serde::Deserialize)]
+    struct BridgeModeFile {
+        bridge_mode: BridgeMode,
+    }
+    serde_json::from_str::<BridgeModeFile>(&text)
+        .ok()
+        .map(|file| file.bridge_mode)
+        .unwrap_or(fallback)
+}
+
+fn persist_bridge_mode(path: &Option<PathBuf>, bridge_mode: BridgeMode) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({ "bridge_mode": bridge_mode })).unwrap_or_default(),
+    );
+}
+
+fn load_bridge_workspace(path: &Option<PathBuf>, fallback: PathBuf) -> PathBuf {
+    let Some(path) = path else {
+        return fallback;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return fallback;
+    };
+    #[derive(serde::Deserialize)]
+    struct BridgeWorkspaceFile {
+        bridge_workspace: PathBuf,
+    }
+    serde_json::from_str::<BridgeWorkspaceFile>(&text)
+        .ok()
+        .map(|file| file.bridge_workspace)
+        .filter(|workspace| !workspace.as_os_str().is_empty())
+        .unwrap_or(fallback)
+}
+
+fn persist_bridge_workspace(path: &Option<PathBuf>, bridge_workspace: &Path) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({ "bridge_workspace": bridge_workspace }))
+            .unwrap_or_default(),
+    );
+}
+
+fn resolve_bridge_workspace(config: &RuntimeConfig) -> Result<PathBuf, StartError> {
+    let workspace = &config.bridge_workspace;
+    let is_default = workspace == &config.default_bridge_workspace;
+    if is_default {
+        std::fs::create_dir_all(workspace).map_err(|err| StartError::SidecarFailed {
+            message: format!("无法创建默认 Bridge Workspace：{err}"),
+        })?;
+        return Ok(workspace.clone());
+    }
+    if workspace.is_dir() {
+        return Ok(workspace.clone());
+    }
+    Err(StartError::BridgeWorkspaceMissing {
+        message: BRIDGE_WORKSPACE_MISSING_MESSAGE.into(),
+    })
 }
 
 fn persist_bridge_token(store: &dyn BridgeTokenStore, token: &str) -> Result<(), StartError> {

@@ -2,10 +2,11 @@ mod commands;
 
 use commands::{
     bridge_log, bridge_status, caller_config, caller_config_display, clear_bridge_records,
-    complete_wizard, credential_status, current_status, production_config, redetect_agent_cli,
-    release_check, request_summaries, rotate_bridge_token, save_cursor_api_key, set_autostart,
-    set_preferred_port, show_settings, start_bridge, start_runtime, stop_bridge, stop_runtime,
-    wizard_status, ConsoleState, TrayStartItem,
+    complete_wizard, credential_status, current_status, pick_bridge_workspace, production_config,
+    redetect_agent_cli, release_check, request_summaries, rotate_bridge_token, save_cursor_api_key,
+    set_autostart, set_bridge_mode, set_bridge_workspace, set_preferred_port, show_settings,
+    start_bridge, start_runtime, stop_bridge, stop_runtime, wizard_status, ConsoleState,
+    TrayStartItem,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -46,6 +47,9 @@ pub fn run() {
             complete_wizard,
             set_autostart,
             set_preferred_port,
+            set_bridge_mode,
+            set_bridge_workspace,
+            pick_bridge_workspace,
             release_check
         ])
         .setup(|app| {
@@ -127,5 +131,10 @@ fn fallback_config() -> cursor2api_bridge_runtime::RuntimeConfig {
         summaries_path: None,
         max_log_bytes: cursor2api_bridge_runtime::MAX_LOG_BYTES,
         preferred_port_path: None,
+        bridge_mode: cursor2api_bridge_runtime::BridgeMode::Agent,
+        bridge_mode_path: None,
+        bridge_workspace: std::env::temp_dir().join("cursor2api-missing-workspace"),
+        default_bridge_workspace: std::env::temp_dir().join("cursor2api-missing-workspace"),
+        bridge_workspace_path: None,
     }
 }

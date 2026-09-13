@@ -25,6 +25,7 @@ cursor2api-console-setup = { path = "crates/console-setup" }
 cursor2api-release-check = { path = "crates/release-check" }
 cursor2api-release-pack = { path = "crates/release-pack", default-features = false }
 keyring = { version = "3", features = ["windows-native"] }
+rfd = "0.15"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -34,6 +34,7 @@ fn isolated_path() -> String {
 }
 
 fn runtime_config(path_env: String, preferred_port: u16) -> RuntimeConfig {
+    let default_ws = std::env::temp_dir().join("cursor2api-default-workspace");
     RuntimeConfig {
         preferred_port,
         path_env,
@@ -44,6 +45,11 @@ fn runtime_config(path_env: String, preferred_port: u16) -> RuntimeConfig {
         summaries_path: None,
         max_log_bytes: MAX_LOG_BYTES,
         preferred_port_path: None,
+        bridge_mode: cursor2api_bridge_runtime::BridgeMode::Agent,
+        bridge_mode_path: None,
+        bridge_workspace: default_ws.clone(),
+        default_bridge_workspace: default_ws,
+        bridge_workspace_path: None,
     }
 }
 
@@ -492,6 +498,229 @@ fn start_keeps_agent_cli_login_visible_to_the_sidecar() {
         "sidecar must pass --force so Agent CLI trusts the Bound Port workspace, got: {body}"
     );
     runtime.stop();
+}
+
+#[test]
+fn start_defaults_bridge_mode_to_agent() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-bridge-mode-default-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45600,
+    ));
+    let bound = runtime.start().expect("Start Bridge");
+    let body = http_json(bound, "/health");
+    assert!(
+        body.contains("\"mode\":\"agent\""),
+        "sidecar must receive Bridge Mode agent by default, got: {body}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn start_uses_bridge_mode_set_before_start() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-bridge-mode-ask-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45610,
+    ));
+    runtime.set_bridge_mode(cursor2api_bridge_runtime::BridgeMode::Ask);
+    let bound = runtime.start().expect("Start Bridge");
+    let body = http_json(bound, "/health");
+    assert!(
+        body.contains("\"mode\":\"ask\""),
+        "sidecar must receive the Bridge Mode set before Start, got: {body}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn bridge_mode_is_reread_from_app_data_by_a_new_runtime() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-bridge-mode-file-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let mode_path = dir.join("bridge-mode.json");
+    let mut first = BridgeRuntime::new({
+        let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45620);
+        config.bridge_mode_path = Some(mode_path.clone());
+        config
+    });
+    first.set_bridge_mode(cursor2api_bridge_runtime::BridgeMode::Plan);
+    assert_eq!(
+        first.bridge_mode(),
+        cursor2api_bridge_runtime::BridgeMode::Plan
+    );
+    drop(first);
+
+    let second = BridgeRuntime::new({
+        let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45620);
+        config.bridge_mode_path = Some(mode_path);
+        config
+    });
+    assert_eq!(
+        second.bridge_mode(),
+        cursor2api_bridge_runtime::BridgeMode::Plan,
+        "Bridge Mode must survive a new zip folder via App Data"
+    );
+}
+
+#[test]
+fn start_creates_default_bridge_workspace_and_passes_it_to_the_sidecar() {
+    let marker = format!(
+        "c2api-ws-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let dir = std::env::temp_dir().join(format!("cursor2api-cli-{marker}"));
+    let default_ws = std::env::temp_dir().join(&marker);
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let _ = fs::remove_dir_all(&default_ws);
+    assert!(!default_ws.exists());
+    let mut runtime = BridgeRuntime::new({
+        let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45630);
+        config.default_bridge_workspace = default_ws.clone();
+        config.bridge_workspace = default_ws.clone();
+        config
+    });
+    let bound = runtime.start().expect("Start Bridge");
+    let body = http_json(bound, "/health");
+    assert!(
+        default_ws.is_dir(),
+        "default Bridge Workspace must be created before Start"
+    );
+    assert!(
+        body.contains(&marker),
+        "sidecar must receive the default Bridge Workspace, got: {body}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn start_uses_custom_bridge_workspace() {
+    let marker = format!(
+        "c2api-custom-ws-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let dir = std::env::temp_dir().join(format!("cursor2api-cli-{marker}"));
+    let custom_ws = std::env::temp_dir().join(&marker);
+    write_fake_agent_cli(&dir, "cursor-agent");
+    fs::create_dir_all(&custom_ws).unwrap();
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45640,
+    ));
+    runtime.set_bridge_workspace(custom_ws);
+    let bound = runtime.start().expect("Start Bridge");
+    let body = http_json(bound, "/health");
+    assert!(
+        body.contains(&marker),
+        "sidecar must receive the custom Bridge Workspace, got: {body}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn start_is_refused_when_custom_bridge_workspace_is_missing() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-missing-ws-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let missing = dir.join("does-not-exist");
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45650,
+    ));
+    runtime.set_bridge_workspace(missing);
+    let err = runtime
+        .start()
+        .expect_err("Start must be refused when Bridge Workspace is missing");
+    match err {
+        StartError::BridgeWorkspaceMissing { message } => {
+            assert!(
+                message.contains("Bridge Workspace"),
+                "refusal must name Bridge Workspace, got: {message}"
+            );
+        }
+        other => panic!("expected BridgeWorkspaceMissing, got {other:?}"),
+    }
+    assert_eq!(runtime.state(), BridgeState::Stopped);
+    assert!(
+        !runtime.start_enabled(),
+        "Start must stay disabled while Bridge Workspace is missing"
+    );
+    assert_eq!(
+        runtime.start_block_reason().as_deref(),
+        Some(cursor2api_bridge_runtime::BRIDGE_WORKSPACE_MISSING_MESSAGE)
+    );
+}
+
+#[test]
+fn bridge_workspace_is_reread_from_app_data_by_a_new_runtime() {
+    let dir = std::env::temp_dir().join(format!(
+        "cursor2api-ws-file-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let chosen = dir.join("my-project");
+    fs::create_dir_all(&chosen).unwrap();
+    let ws_path = dir.join("bridge-workspace.json");
+    let mut first = BridgeRuntime::new({
+        let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45660);
+        config.bridge_workspace_path = Some(ws_path.clone());
+        config
+    });
+    first.set_bridge_workspace(chosen.clone());
+    drop(first);
+
+    let second = BridgeRuntime::new({
+        let mut config = runtime_config(dir.to_string_lossy().into_owned(), 45660);
+        config.bridge_workspace_path = Some(ws_path);
+        config
+    });
+    assert_eq!(
+        second.bridge_workspace(),
+        chosen.as_path(),
+        "Bridge Workspace must survive a new zip folder via App Data"
+    );
 }
 
 #[test]

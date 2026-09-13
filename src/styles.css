@@ -85,6 +85,42 @@ h1 {
   gap: 16px;
 }
 
+.ports #bridge-defaults,
+.ports .bridge-workspace-field,
+.ports #bridge-apply-hint {
+  grid-column: 1 / -1;
+}
+
+#bridge-defaults {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+#bridge-defaults .bridge-workspace-field,
+#bridge-defaults #bridge-apply-hint {
+  grid-column: 1 / -1;
+}
+
+#bridge-defaults[hidden] {
+  display: none;
+}
+
+.bridge-workspace-field button {
+  flex: 0 0 auto;
+  width: fit-content;
+}
+
+select,
+input {
+  font: inherit;
+  color: #ece7dc;
+  background: #14131a;
+  border: 1px solid #3a3844;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -104,15 +140,6 @@ label.check {
 label.check input {
   width: auto;
   accent-color: #e4c38a;
-}
-
-input {
-  font: inherit;
-  color: #ece7dc;
-  background: #14131a;
-  border: 1px solid #3a3844;
-  border-radius: 10px;
-  padding: 8px 10px;
 }
 
 #bound-port {

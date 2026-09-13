@@ -9,12 +9,20 @@ Windows 桌面 **Console**，产品名为 **cursor2api**。安装包内嵌 Node 
 _Avoid_: Cursor Proxy, 官方 Cursor, Cursor IDE, Cursor App, cursor-api-proxy（仅指上游 npm 包）
 
 **Console**：
-Operator 安装的桌面程序：托盘图标 + 中文设置窗口。首次向导未完成前，向导挡住整窗（无 Sidebar）。完成后设置窗用 Sidebar 分页展示最小集。行话保持英文：Bridge、Caller、Agent CLI、Base URL、Bridge Token、Cursor API Key、Sidebar、Preferences、Release。
+Operator 安装的桌面程序：托盘图标 + 中文设置窗口。首次向导未完成前，向导挡住整窗（无 Sidebar）。完成后设置窗用 Sidebar 分页展示最小集。行话保持英文：Bridge、Bridge Mode、Bridge Workspace、Caller、Agent CLI、Base URL、Bridge Token、Cursor API Key、Sidebar、Preferences、Release。
 _Avoid_: 客户端, 电脑客户端, IDE, 聊天应用, widget
 
 **Bridge**：
 Console 拉起的本机 HTTP 进程，来自 npm `cursor-api-proxy`（本仓库不分叉）。只绑定 `127.0.0.1`。缺少 Agent CLI 时不得启动。
 _Avoid_: proxy, 服务器, API
+
+**Bridge Mode**：
+Operator 为整台 Bridge 选择的、传给 Agent CLI 的默认 `--mode`。取值 `ask`、`agent` 或 `plan`，出厂默认 `agent`。界面中文标签为问答 / 智能体 / 计划。Caller 仍可用请求体 `mode` 或请求头 `X-Cursor-Mode` 覆盖单次请求。立刻写入 App Data，下次 Start Bridge 才生效。首次向导不出现此项，只在 Sidebar 的 Bridge 页，与 Bridge Workspace 一起。
+_Avoid_: Agent 模式, ask 模式（未加限定）, 智能体（指取值时用 agent）, CLI mode, Cursor Mode
+
+**Bridge Workspace**：
+Operator 为整台 Bridge 选择的、Agent CLI 的工作目录。未选时使用 App Data 下的默认目录；该默认目录不存在则创建后再 Start。Operator 保存过的路径若不存在，Start 失败并要求在 Bridge 页重选。Caller 仍可用请求头 `X-Cursor-Workspace` 指到该目录内已存在的子目录。立刻写入 App Data，下次 Start Bridge 才生效。首次向导不出现此项，只在 Sidebar 的 Bridge 页，与 Bridge Mode 一起。
+_Avoid_: 工作区路径（未加限定）, cwd, 项目目录, workspace（未加限定）
 
 **Preferred Port**：
 Operator 希望使用的端口（默认 8765）。若被占用，Console 尝试 8766、8767…，必须展示并复制 Bound Port，不得把过期的 Preferred Port 交给 Caller。
@@ -49,7 +57,7 @@ Operator 机器上的 Cursor `cursor-agent` / `agent` 可执行文件。运行�
 _Avoid_: agent, Cursor
 
 **App Data**：
-Windows 上非秘密的 Console 状态：`%APPDATA%\cursor2api\`（窗口状态、Preferred Port、请求摘要、滚动日志）。密钥只放操作系统凭据库。zip 可解压到任意目录。
+Windows 上非秘密的 Console 状态：`%APPDATA%\cursor2api\`（窗口状态、Preferred Port、Bridge Mode、Bridge Workspace、请求摘要、滚动日志）。密钥只放操作系统凭据库。zip 可解压到任意目录。未选择 Bridge Workspace 时，默认工作目录也在此树下。
 _Avoid_: 安装目录, portable 文件夹（当作设置存放处）
 
 **Request Summary**：
@@ -73,4 +81,4 @@ Sidebar 中的一页。界面中文可写「偏好设置」。v0 只承载 Relea
 _Avoid_: 设置（与 Console 设置窗叠名）, Settings
 
 **最小集**：
-v1 设置里仅有的控制：启停、健康、Preferred Port / Bound Port、Bridge Token、Cursor API Key / 登录状态、复制 Caller 配置、Request Summary、滚动日志（2MB）、Autostart、Preferences（v0 仅 Release 提示）。没有工作区路径、没有 agent 模式开关、没有完整 env 表单、没有主题、没有界面语言。
+v1 设置里仅有的控制：启停、健康、Preferred Port / Bound Port、Bridge Mode、Bridge Workspace、Bridge Token、Cursor API Key / 登录状态、复制 Caller 配置、Request Summary、滚动日志（2MB）、Autostart、Preferences（v0 仅 Release 提示）。没有完整 env 表单、没有主题、没有界面语言。

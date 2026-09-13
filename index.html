@@ -60,6 +60,25 @@
           <p class="label">Bound Port</p>
           <p id="bound-port">—</p>
         </div>
+        <div id="bridge-defaults" hidden>
+          <label>
+            Bridge Mode
+            <select id="bridge-mode">
+              <option value="ask">问答</option>
+              <option value="agent" selected>智能体</option>
+              <option value="plan">计划</option>
+            </select>
+          </label>
+          <label class="bridge-workspace-field">
+            Bridge Workspace
+            <input id="bridge-workspace" type="text" spellcheck="false" />
+            <button id="pick-bridge-workspace" type="button" class="ghost">选择目录</button>
+          </label>
+          <p id="bridge-apply-hint" class="disclaimer">
+            更改 Bridge Mode 或 Bridge Workspace 后，下次启动 Bridge 才生效。Caller 仍可用
+            X-Cursor-Workspace 指到此目录内的子目录。
+          </p>
+        </div>
       </section>
 
       <div class="actions">

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cursor2api_bridge_runtime::{
-    find_executable, system_path_env, BridgeRuntime, BridgeState, BridgeTokenStore,
+    find_executable, system_path_env, BridgeMode, BridgeRuntime, BridgeState, BridgeTokenStore,
     CursorApiKeyStore, OperatorHealth, RuntimeConfig, DEFAULT_PREFERRED_PORT,
 };
 use cursor2api_console_setup::{self as setup, SetupPaths, SetupStatus};
@@ -32,6 +32,8 @@ pub struct BridgeStatusView {
     pub health: OperatorHealth,
     pub start_enabled: bool,
     pub start_block_reason: Option<String>,
+    pub bridge_mode: BridgeMode,
+    pub bridge_workspace: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -72,6 +74,8 @@ impl ConsoleState {
                 health: runtime.operator_health(),
                 start_enabled: runtime.start_enabled(),
                 start_block_reason: block,
+                bridge_mode: runtime.bridge_mode(),
+                bridge_workspace: runtime.bridge_workspace().to_string_lossy().into_owned(),
             },
             BridgeState::Stopped => BridgeStatusView {
                 running: false,
@@ -82,6 +86,8 @@ impl ConsoleState {
                 health: runtime.operator_health(),
                 start_enabled: runtime.start_enabled(),
                 start_block_reason: block,
+                bridge_mode: runtime.bridge_mode(),
+                bridge_workspace: runtime.bridge_workspace().to_string_lossy().into_owned(),
             },
         }
     }
@@ -122,6 +128,11 @@ fn runtime_config(path_env: String, sidecar_program: PathBuf, sidecar_args: Vec<
         summaries_path: Some(app_data_dir().join("request-summaries.json")),
         max_log_bytes: cursor2api_bridge_runtime::MAX_LOG_BYTES,
         preferred_port_path: Some(app_data_dir().join("preferred-port.json")),
+        bridge_mode: cursor2api_bridge_runtime::BridgeMode::Agent,
+        bridge_mode_path: Some(app_data_dir().join("bridge-mode.json")),
+        bridge_workspace: app_data_dir().join("workspace"),
+        default_bridge_workspace: app_data_dir().join("workspace"),
+        bridge_workspace_path: Some(app_data_dir().join("bridge-workspace.json")),
     }
 }
 
@@ -329,6 +340,48 @@ pub fn set_preferred_port(app: AppHandle, preferred_port: u16) -> Result<BridgeS
         runtime.set_preferred_port(preferred_port);
     }
     Ok(state.snapshot())
+}
+
+#[tauri::command]
+pub fn set_bridge_mode(app: AppHandle, bridge_mode: BridgeMode) -> Result<BridgeStatusView, String> {
+    let state = app.state::<ConsoleState>();
+    {
+        let mut runtime = state.runtime.lock().map_err(|_| console_busy())?;
+        runtime.set_bridge_mode(bridge_mode);
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+pub fn set_bridge_workspace(
+    app: AppHandle,
+    bridge_workspace: String,
+) -> Result<BridgeStatusView, String> {
+    let state = app.state::<ConsoleState>();
+    {
+        let mut runtime = state.runtime.lock().map_err(|_| console_busy())?;
+        let path = {
+            let trimmed = bridge_workspace.trim();
+            if trimmed.is_empty() {
+                runtime.default_bridge_workspace().to_path_buf()
+            } else {
+                PathBuf::from(trimmed)
+            }
+        };
+        runtime.set_bridge_workspace(path);
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+pub fn pick_bridge_workspace(app: AppHandle) -> Result<BridgeStatusView, String> {
+    let Some(folder) = rfd::FileDialog::new()
+        .set_title("Bridge Workspace")
+        .pick_folder()
+    else {
+        return Ok(app.state::<ConsoleState>().snapshot());
+    };
+    set_bridge_workspace(app, folder.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
