@@ -43,8 +43,13 @@
       <section class="status-card" aria-live="polite">
         <p class="label">状态</p>
         <p id="health">未启动</p>
+        <p id="cli-block" class="disclaimer" hidden></p>
         <p id="error" class="error" hidden></p>
       </section>
+
+      <div class="actions">
+        <button id="redetect-cli" type="button" class="ghost">重新检测 Agent CLI</button>
+      </div>
 
       <section class="ports">
         <label>
@@ -85,7 +90,7 @@
           id="caller-config"
           readonly
           rows="4"
-          placeholder="启动 Bridge 后在此复制 Base URL 与 Bridge Token"
+          placeholder="启动 Bridge 后在此显示 Base URL；Bridge Token 只写入剪贴板"
         ></textarea>
         <div class="actions">
           <button id="copy-config" type="button" disabled>复制 Caller 配置</button>
@@ -93,7 +98,7 @@
         </div>
       </section>
 
-      <section class="copy-card">
+      <section id="autostart-settings" class="copy-card" hidden>
         <p class="label">Autostart</p>
         <p id="autostart-warning" class="disclaimer"></p>
         <label class="check">

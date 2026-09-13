@@ -26,6 +26,7 @@ pub struct RuntimeConfig {
     pub log_path: Option<PathBuf>,
     pub summaries_path: Option<PathBuf>,
     pub max_log_bytes: u64,
+    pub preferred_port_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -42,6 +43,17 @@ pub enum BridgeState {
     Stopped,
     Running { bound_port: u16 },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OperatorHealth {
+    AgentCliMissing,
+    Stopped,
+    Running { bound_port: u16 },
+}
+
+pub const AGENT_CLI_MISSING_MESSAGE: &str =
+    "未在 PATH 上找到 Agent CLI（cursor-agent 或 agent），无法 Start Bridge。";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartError {
@@ -151,6 +163,9 @@ impl BridgeRuntime {
         let records = Arc::new(Mutex::new(RecordStore::open(
             config.summaries_path.clone(),
         )));
+        let mut config = config;
+        config.preferred_port =
+            load_preferred_port(&config.preferred_port_path, config.preferred_port);
         Self {
             config,
             token_store,
@@ -199,6 +214,37 @@ impl BridgeRuntime {
         find_agent_cli(&self.config.path_env).is_some()
     }
 
+    pub fn redetect_agent_cli(&mut self, path_env: String) -> bool {
+        self.config.path_env = path_env;
+        self.agent_cli_present()
+    }
+
+    pub fn operator_health(&self) -> OperatorHealth {
+        match self.state() {
+            BridgeState::Running { bound_port } => OperatorHealth::Running { bound_port },
+            BridgeState::Stopped if !self.agent_cli_present() => OperatorHealth::AgentCliMissing,
+            BridgeState::Stopped => OperatorHealth::Stopped,
+        }
+    }
+
+    pub fn start_enabled(&self) -> bool {
+        matches!(self.state(), BridgeState::Stopped) && self.agent_cli_present()
+    }
+
+    pub fn start_block_reason(&self) -> Option<String> {
+        if self.agent_cli_present() {
+            None
+        } else {
+            Some(AGENT_CLI_MISSING_MESSAGE.to_string())
+        }
+    }
+
+    pub fn ensure_bridge_token(&self) -> Result<String, StartError> {
+        let token = resolve_bridge_token(self.token_store.as_ref())?;
+        persist_bridge_token(self.token_store.as_ref(), &token)?;
+        Ok(token)
+    }
+
     pub fn has_bridge_token(&self) -> Result<bool, String> {
         Ok(self
             .token_store
@@ -229,6 +275,7 @@ impl BridgeRuntime {
 
     pub fn set_preferred_port(&mut self, preferred_port: u16) {
         self.config.preferred_port = preferred_port;
+        persist_preferred_port(&self.config.preferred_port_path, preferred_port);
     }
 
     pub fn start(&mut self) -> Result<u16, StartError> {
@@ -236,7 +283,7 @@ impl BridgeRuntime {
 
         if find_agent_cli(&self.config.path_env).is_none() {
             return Err(StartError::AgentCliMissing {
-                message: "未在 PATH 上找到 Agent CLI（cursor-agent 或 agent），无法 Start Bridge。".into(),
+                message: AGENT_CLI_MISSING_MESSAGE.into(),
             });
         }
 
@@ -315,7 +362,11 @@ impl BridgeRuntime {
             return Err(StartError::HealthCheckTimeout);
         }
 
-        persist_bridge_token(self.token_store.as_ref(), &token)?;
+        if let Err(err) = persist_bridge_token(self.token_store.as_ref(), &token) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
 
         if let Ok(mut store) = self.records.lock() {
             let mut secrets = vec![token.clone()];
@@ -391,6 +442,15 @@ impl BridgeRuntime {
         ))
     }
 
+    pub fn caller_config_display(&self) -> Result<String, String> {
+        let bound_port = self
+            .bound_port
+            .ok_or_else(|| "Bridge 未启动，没有 Bound Port 可复制给 Caller。".to_string())?;
+        Ok(format!(
+            "Base URL: http://{BIND_HOST}:{bound_port}/v1\nBridge Token: （点「复制 Caller 配置」写入剪贴板，不在此窗长期显示）"
+        ))
+    }
+
     pub fn rotate_token(&mut self) -> Result<String, StartError> {
         let token = generate_bridge_token()?;
         self.token_store
@@ -411,6 +471,45 @@ impl Drop for BridgeRuntime {
 
 pub fn find_executable(name: &str, path_env: &str) -> Option<PathBuf> {
     find_on_path(name, path_env)
+}
+
+pub fn system_path_env() -> String {
+    let process = std::env::var("PATH").unwrap_or_default();
+    #[cfg(windows)]
+    {
+        if let Some(from_os) = windows_user_and_machine_path() {
+            if process.is_empty() {
+                return from_os;
+            }
+            return format!("{from_os};{process}");
+        }
+    }
+    process
+}
+
+#[cfg(windows)]
+fn windows_user_and_machine_path() -> Option<String> {
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-Command",
+        "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')",
+    ]);
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 pub fn find_agent_cli(path_env: &str) -> Option<PathBuf> {
@@ -490,6 +589,38 @@ fn load_cursor_api_key(store: &dyn CursorApiKeyStore) -> Result<Option<String>, 
         .load()
         .map(|value| value.filter(|key| !key.is_empty()))
         .map_err(|message| StartError::SidecarFailed { message })
+}
+
+fn load_preferred_port(path: &Option<PathBuf>, fallback: u16) -> u16 {
+    let Some(path) = path else {
+        return fallback;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return fallback;
+    };
+    #[derive(serde::Deserialize)]
+    struct PreferredPortFile {
+        preferred_port: u16,
+    }
+    serde_json::from_str::<PreferredPortFile>(&text)
+        .ok()
+        .map(|file| file.preferred_port)
+        .filter(|port| *port > 0)
+        .unwrap_or(fallback)
+}
+
+fn persist_preferred_port(path: &Option<PathBuf>, preferred_port: u16) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({ "preferred_port": preferred_port }))
+            .unwrap_or_default(),
+    );
 }
 
 fn persist_bridge_token(store: &dyn BridgeTokenStore, token: &str) -> Result<(), StartError> {

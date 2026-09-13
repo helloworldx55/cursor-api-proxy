@@ -1,13 +1,15 @@
 mod commands;
 
 use commands::{
-    bridge_log, bridge_status, caller_config, clear_bridge_records, complete_wizard,
-    credential_status, current_status, production_config, release_check, request_summaries,
-    rotate_bridge_token, save_cursor_api_key, set_autostart, show_settings, start_bridge,
-    start_runtime, stop_bridge, stop_runtime, wizard_status, ConsoleState,
+    bridge_log, bridge_status, caller_config, caller_config_display, clear_bridge_records,
+    complete_wizard, credential_status, current_status, production_config, redetect_agent_cli,
+    release_check, request_summaries, rotate_bridge_token, save_cursor_api_key, set_autostart,
+    set_preferred_port, show_settings, start_bridge, start_runtime, stop_bridge, stop_runtime,
+    wizard_status, ConsoleState, TrayStartItem,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,6 +34,8 @@ pub fn run() {
             start_bridge,
             stop_bridge,
             caller_config,
+            caller_config_display,
+            redetect_agent_cli,
             rotate_bridge_token,
             save_cursor_api_key,
             credential_status,
@@ -41,14 +45,22 @@ pub fn run() {
             wizard_status,
             complete_wizard,
             set_autostart,
+            set_preferred_port,
             release_check
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "打开设置", true, None::<&str>)?;
-            let start = MenuItem::with_id(app, "start", "启动 Bridge", true, None::<&str>)?;
+            let start = MenuItem::with_id(
+                app,
+                "start",
+                "启动 Bridge",
+                current_status(&app.handle()).start_enabled,
+                None::<&str>,
+            )?;
             let stop = MenuItem::with_id(app, "stop", "停止 Bridge", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &start, &stop, &quit])?;
+            app.manage(TrayStartItem(start.clone()));
 
             let mut tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
@@ -80,7 +92,9 @@ pub fn run() {
                     }
                 });
 
-            if let Some(icon) = app.default_window_icon() {
+            if let Ok(icon) = commands::tray_icon_for_running(false) {
+                tray = tray.icon(icon);
+            } else if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
@@ -112,5 +126,6 @@ fn fallback_config() -> cursor2api_bridge_runtime::RuntimeConfig {
         log_path: None,
         summaries_path: None,
         max_log_bytes: cursor2api_bridge_runtime::MAX_LOG_BYTES,
+        preferred_port_path: None,
     }
 }

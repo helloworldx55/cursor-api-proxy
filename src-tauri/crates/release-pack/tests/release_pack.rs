@@ -249,4 +249,22 @@ fn repo_readme_covers_unofficial_disclaimer_and_cursor_account() {
         text.contains("cursor2api-windows.zip") || text.contains("解压"),
         "README must tell an Operator they unpack a zip"
     );
+    assert!(
+        !text.contains("安装器"),
+        "README must not call the Release an installer"
+    );
+    assert!(
+        text.contains("两个") && text.contains("App Data"),
+        "README must say two zip folders share App Data for one Windows login, got: {text}"
+    );
+}
+
+#[test]
+fn tray_icons_differ_when_the_bridge_is_running() {
+    let stopped = fs::read(repo_root().join("src-tauri/icons/tray-stopped.png")).unwrap();
+    let running = fs::read(repo_root().join("src-tauri/icons/tray-running.png")).unwrap();
+    assert_ne!(
+        stopped, running,
+        "tray must use a different glyph while the Bridge is running"
+    );
 }

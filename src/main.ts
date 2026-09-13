@@ -1,11 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+type OperatorHealth =
+  | { kind: "agent_cli_missing" }
+  | { kind: "stopped" }
+  | { kind: "running"; bound_port: number };
+
 type BridgeStatusView = {
   running: boolean;
   bound_port: number | null;
   preferred_port: number;
   error: string | null;
+  agent_cli_present: boolean;
+  health: OperatorHealth;
+  start_enabled: boolean;
+  start_block_reason: string | null;
 };
 
 const healthEl = () => document.querySelector("#health");
@@ -41,6 +50,11 @@ const completeWizardBtn = () =>
   document.querySelector<HTMLButtonElement>("#complete-wizard");
 const autostartEl = () => document.querySelector<HTMLInputElement>("#autostart");
 const autostartWarningEl = () => document.querySelector("#autostart-warning");
+const autostartSettingsEl = () =>
+  document.querySelector<HTMLElement>("#autostart-settings");
+const cliBlockEl = () => document.querySelector<HTMLElement>("#cli-block");
+const redetectCliBtn = () =>
+  document.querySelector<HTMLButtonElement>("#redetect-cli");
 const releaseBannerEl = () =>
   document.querySelector<HTMLElement>("#release-banner");
 const releaseMessageEl = () => document.querySelector("#release-message");
@@ -75,6 +89,7 @@ type SetupStatus = {
   can_complete: boolean;
   completed: boolean;
   autostart_enabled: boolean;
+  autostart_offered: boolean;
   move_folder_warning: string;
 };
 
@@ -88,7 +103,7 @@ function renderSetup(status: SetupStatus) {
       : "未找到 Agent CLI";
     const token = status.has_bridge_token
       ? "已有 Bridge Token"
-      : "尚无 Bridge Token（请先启动 Bridge）";
+      : "尚无 Bridge Token";
     prereqs.textContent = `${cli} · ${token}`;
   }
   const warn = wizardWarningEl();
@@ -97,6 +112,8 @@ function renderSetup(status: SetupStatus) {
   if (settingsWarn) settingsWarn.textContent = status.move_folder_warning;
   const complete = completeWizardBtn();
   if (complete) complete.disabled = !status.can_complete;
+  const autostartSettings = autostartSettingsEl();
+  if (autostartSettings) autostartSettings.hidden = !status.autostart_offered;
   const autostart = autostartEl();
   if (autostart && document.activeElement !== autostart) {
     autostart.checked = status.autostart_enabled;
@@ -219,9 +236,19 @@ function renderCredentials(status: CredentialStatusView) {
     ? "Cursor API Key 已保存在凭据库"
     : "未保存 Cursor API Key";
   const login = status.agent_cli_logged_in
-    ? "Agent CLI 已登录，可不贴 Key"
+    ? "Agent CLI 已登录，可不贴 Cursor API Key"
     : "Agent CLI 未登录";
   el.textContent = `${key} · ${login}`;
+}
+
+function healthLabel(status: BridgeStatusView) {
+  if (status.health.kind === "running") {
+    return `运行中 · 127.0.0.1:${status.health.bound_port}`;
+  }
+  if (status.health.kind === "agent_cli_missing") {
+    return "未找到 Agent CLI";
+  }
+  return "未启动";
 }
 
 function render(status: BridgeStatusView) {
@@ -230,9 +257,17 @@ function render(status: BridgeStatusView) {
   const bound = boundEl();
   const preferred = preferredEl();
   if (health) {
-    health.textContent = status.running
-      ? `运行中 · 127.0.0.1:${status.bound_port}`
-      : "未启动";
+    health.textContent = healthLabel(status);
+  }
+  const block = cliBlockEl();
+  if (block) {
+    if (status.start_block_reason && !status.running) {
+      block.hidden = false;
+      block.textContent = status.start_block_reason;
+    } else {
+      block.hidden = true;
+      block.textContent = "";
+    }
   }
   if (bound) {
     bound.textContent = status.bound_port ? String(status.bound_port) : "—";
@@ -241,9 +276,13 @@ function render(status: BridgeStatusView) {
     preferred.value = String(status.preferred_port);
   }
   if (error) {
-    if (status.error) {
+    const message =
+      status.error && status.error !== status.start_block_reason
+        ? status.error
+        : "";
+    if (message) {
       error.hidden = false;
-      error.textContent = status.error;
+      error.textContent = message;
     } else {
       error.hidden = true;
       error.textContent = "";
@@ -252,7 +291,7 @@ function render(status: BridgeStatusView) {
   const start = startBtn();
   const stop = stopBtn();
   const copy = copyConfigBtn();
-  if (start) start.disabled = status.running;
+  if (start) start.disabled = !status.start_enabled;
   if (stop) stop.disabled = !status.running;
   if (copy) copy.disabled = !status.bound_port;
   if (!status.bound_port) {
@@ -269,7 +308,7 @@ async function refreshCallerConfig(running: boolean) {
     return;
   }
   try {
-    area.value = await invoke<string>("caller_config");
+    area.value = await invoke<string>("caller_config_display");
   } catch {
     area.value = "";
   }
@@ -345,12 +384,12 @@ async function start() {
     render(status);
     await refreshCallerConfig(status.running);
   } catch (err) {
-    render({
-      running: false,
-      bound_port: null,
-      preferred_port: preferred,
-      error: String(err),
-    });
+    const status = await invoke<BridgeStatusView>("bridge_status").catch(
+      () => null,
+    );
+    if (status) {
+      render({ ...status, error: String(err) });
+    }
     await refreshCallerConfig(false);
   }
   await refreshSetup();
@@ -378,6 +417,21 @@ async function rotateToken() {
   }
 }
 
+async function redetectAgentCli() {
+  try {
+    const status = await invoke<BridgeStatusView>("redetect_agent_cli");
+    render(status);
+    await refreshCallerConfig(status.running);
+    await refreshSetup();
+  } catch (err) {
+    const error = errorEl();
+    if (error) {
+      error.hidden = false;
+      error.textContent = String(err);
+    }
+  }
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   startBtn()?.addEventListener("click", () => {
     void start();
@@ -386,9 +440,19 @@ window.addEventListener("DOMContentLoaded", async () => {
     void stop();
   });
   copyConfigBtn()?.addEventListener("click", async () => {
-    const text = callerConfigEl()?.value.trim();
-    if (text) {
+    try {
+      const text = await invoke<string>("caller_config");
       await navigator.clipboard.writeText(text);
+      const area = callerConfigEl();
+      if (area) {
+        area.value = await invoke<string>("caller_config_display");
+      }
+    } catch (err) {
+      const error = errorEl();
+      if (error) {
+        error.hidden = false;
+        error.textContent = String(err);
+      }
     }
   });
   rotateBtn()?.addEventListener("click", () => {
@@ -396,6 +460,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   saveKeyBtn()?.addEventListener("click", () => {
     void saveCursorApiKey();
+  });
+  redetectCliBtn()?.addEventListener("click", () => {
+    void redetectAgentCli();
   });
   clearRecordsBtn()?.addEventListener("click", () => {
     void clearRecords();
@@ -409,6 +476,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   autostartEl()?.addEventListener("change", () => {
     void toggleAutostart();
+  });
+  preferredEl()?.addEventListener("change", () => {
+    const preferred = Number(preferredEl()?.value || 8765);
+    void invoke<BridgeStatusView>("set_preferred_port", {
+      preferredPort: preferred,
+    }).then(render);
   });
   dismissReleaseBtn()?.addEventListener("click", () => {
     releaseDismissed = true;

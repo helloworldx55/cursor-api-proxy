@@ -129,3 +129,35 @@ fn moving_the_exe_requires_completing_the_wizard_again() {
         "a moved Console must re-run the wizard"
     );
 }
+
+#[test]
+fn autostart_is_not_offered_before_the_wizard_completes() {
+    let paths = setup_paths("no-autostart-yet");
+    let exe = fake_exe(&paths.wizard_marker.parent().unwrap().join("bin"));
+    let view = status(&paths, true, true, &exe);
+    assert!(!view.completed);
+    assert!(
+        !view.autostart_offered,
+        "Autostart must wait until the first successful wizard"
+    );
+    let err = set_autostart(&paths, true, &exe)
+        .expect_err("settings must not enable Autostart on a broken install");
+    assert!(
+        err.contains("向导"),
+        "refusal must mention the wizard, got: {err}"
+    );
+    assert!(
+        !paths.startup_dir.join(AUTOSTART_SHORTCUT_NAME).exists(),
+        "no Startup shortcut before wizard complete"
+    );
+}
+
+#[test]
+fn completed_wizard_offers_autostart() {
+    let paths = setup_paths("autostart-offered");
+    let exe = fake_exe(&paths.wizard_marker.parent().unwrap().join("bin"));
+    let view = complete(&paths, true, true, false, &exe).unwrap();
+    assert!(view.autostart_offered);
+    set_autostart(&paths, true, &exe).expect("settings Autostart after wizard");
+    assert!(status(&paths, true, true, &exe).autostart_enabled);
+}

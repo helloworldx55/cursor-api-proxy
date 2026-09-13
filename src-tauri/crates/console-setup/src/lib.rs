@@ -18,6 +18,7 @@ pub struct SetupStatus {
     pub can_complete: bool,
     pub completed: bool,
     pub autostart_enabled: bool,
+    pub autostart_offered: bool,
     pub move_folder_warning: String,
 }
 
@@ -27,12 +28,14 @@ pub fn status(
     has_bridge_token: bool,
     exe: &Path,
 ) -> SetupStatus {
+    let completed = wizard_completed(paths, exe);
     SetupStatus {
         agent_cli_present,
         has_bridge_token,
         can_complete: agent_cli_present && has_bridge_token,
-        completed: wizard_completed(paths, exe),
+        completed,
         autostart_enabled: autostart_shortcut(paths).is_file(),
+        autostart_offered: completed,
         move_folder_warning: MOVE_FOLDER_WARNING.to_string(),
     }
 }
@@ -56,6 +59,9 @@ pub fn complete(
 }
 
 pub fn set_autostart(paths: &SetupPaths, enabled: bool, exe: &Path) -> Result<(), String> {
+    if enabled && !wizard_completed(paths, exe) {
+        return Err("首次向导完成前不能启用 Autostart。".into());
+    }
     let lnk = autostart_shortcut(paths);
     if enabled {
         std::fs::create_dir_all(&paths.startup_dir).map_err(|err| err.to_string())?;

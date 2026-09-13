@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use cursor2api_bridge_runtime::{
     BridgeRuntime, BridgeState, BridgeTokenStore, CursorApiKeyStore, MemoryCursorApiKeyStore,
-    MemoryTokenStore, RuntimeConfig, StartError, BIND_HOST, DEFAULT_PREFERRED_PORT, MAX_LOG_BYTES,
+    MemoryTokenStore, OperatorHealth, RuntimeConfig, StartError, BIND_HOST,
+    DEFAULT_PREFERRED_PORT, MAX_LOG_BYTES,
 };
 
 fn node_program() -> PathBuf {
@@ -42,6 +43,7 @@ fn runtime_config(path_env: String, preferred_port: u16) -> RuntimeConfig {
         log_path: None,
         summaries_path: None,
         max_log_bytes: MAX_LOG_BYTES,
+        preferred_port_path: None,
     }
 }
 
@@ -737,4 +739,171 @@ fn clear_records_wipes_summaries_and_logs_in_memory_and_on_disk() {
         "cleared Request Summary must not reload from disk"
     );
     runtime.stop();
+}
+
+#[test]
+fn health_distinguishes_missing_agent_cli_from_stopped() {
+    let missing = BridgeRuntime::new(runtime_config(isolated_path(), DEFAULT_PREFERRED_PORT));
+    assert_eq!(missing.operator_health(), OperatorHealth::AgentCliMissing);
+    assert!(!missing.start_enabled());
+    assert!(
+        missing
+            .start_block_reason()
+            .expect("block copy")
+            .contains("Agent CLI")
+    );
+
+    let dir = std::env::temp_dir().join(format!("cursor2api-health-cli-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let present = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        DEFAULT_PREFERRED_PORT,
+    ));
+    assert_eq!(present.operator_health(), OperatorHealth::Stopped);
+    assert!(present.start_enabled());
+    assert!(present.start_block_reason().is_none());
+}
+
+#[test]
+fn health_is_running_only_while_bridge_is_up() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-health-run-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let mut runtime = BridgeRuntime::new(runtime_config(
+        dir.to_string_lossy().into_owned(),
+        45400,
+    ));
+    let bound = runtime.start().unwrap();
+    assert_eq!(
+        runtime.operator_health(),
+        OperatorHealth::Running { bound_port: bound }
+    );
+    assert!(!runtime.start_enabled());
+    runtime.stop();
+    assert_eq!(runtime.operator_health(), OperatorHealth::Stopped);
+    assert!(runtime.start_enabled());
+}
+
+#[test]
+fn ensure_bridge_token_mints_without_starting_the_bridge() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-ensure-token-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    let runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 45410),
+        store.clone(),
+    );
+    assert!(!runtime.has_bridge_token().unwrap());
+    let token = runtime
+        .ensure_bridge_token()
+        .expect("first successful setup must mint a Bridge Token");
+    assert!(token.len() >= 32);
+    assert_eq!(store.load().unwrap().as_deref(), Some(token.as_str()));
+    assert_eq!(runtime.state(), BridgeState::Stopped);
+    assert!(
+        TcpListener::bind((BIND_HOST, 45410)).is_ok(),
+        "minting a Bridge Token must not bind the Preferred Port"
+    );
+}
+
+#[test]
+fn preferred_port_is_reread_from_app_data_by_a_new_runtime() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-port-file-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let port_path = dir.join("preferred-port.json");
+    let mut first = BridgeRuntime::new({
+        let mut config = runtime_config(dir.to_string_lossy().into_owned(), DEFAULT_PREFERRED_PORT);
+        config.preferred_port_path = Some(port_path.clone());
+        config
+    });
+    first.set_preferred_port(8777);
+    assert_eq!(first.preferred_port(), 8777);
+    drop(first);
+
+    let second = BridgeRuntime::new({
+        let mut config = runtime_config(dir.to_string_lossy().into_owned(), DEFAULT_PREFERRED_PORT);
+        config.preferred_port_path = Some(port_path);
+        config
+    });
+    assert_eq!(
+        second.preferred_port(),
+        8777,
+        "Preferred Port must survive a new zip folder via App Data"
+    );
+}
+
+struct FailingSaveStore;
+
+impl BridgeTokenStore for FailingSaveStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn save(&self, _token: &str) -> Result<(), String> {
+        Err("凭据库写入失败".into())
+    }
+}
+
+#[test]
+fn failed_start_does_not_leave_an_orphaned_sidecar() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-orphan-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let preferred = 45420;
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), preferred),
+        Arc::new(FailingSaveStore),
+    );
+    assert!(runtime.start().is_err());
+    assert_eq!(runtime.state(), BridgeState::Stopped);
+    for port in preferred..=preferred + 3 {
+        assert!(
+            !http_ok(port, "/health"),
+            "failed Start must not leave a sidecar on {port}"
+        );
+        assert!(
+            TcpListener::bind((BIND_HOST, port)).is_ok(),
+            "failed Start must release {port}"
+        );
+    }
+}
+
+#[test]
+fn caller_display_omits_the_bridge_token() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-display-{}", std::process::id()));
+    write_fake_agent_cli(&dir, "cursor-agent");
+    let store = Arc::new(MemoryTokenStore::default());
+    store.save("must-not-stay-on-screen").unwrap();
+    let mut runtime = BridgeRuntime::with_token_store(
+        runtime_config(dir.to_string_lossy().into_owned(), 45430),
+        store,
+    );
+    let bound = runtime.start().unwrap();
+    let copy = runtime.caller_config().unwrap();
+    assert!(copy.contains("must-not-stay-on-screen"));
+    let display = runtime
+        .caller_config_display()
+        .expect("settings can show a Bound Port hint");
+    assert!(
+        display.contains(&format!("http://127.0.0.1:{bound}/v1")),
+        "display must still show Base URL with Bound Port, got: {display}"
+    );
+    assert!(
+        !display.contains("must-not-stay-on-screen"),
+        "settings must not keep the Bridge Token on screen, got: {display}"
+    );
+    runtime.stop();
+}
+
+#[test]
+fn redetect_agent_cli_picks_up_a_new_path() {
+    let dir = std::env::temp_dir().join(format!("cursor2api-redetect-{}", std::process::id()));
+    let mut runtime = BridgeRuntime::new(runtime_config(isolated_path(), DEFAULT_PREFERRED_PORT));
+    assert!(!runtime.agent_cli_present());
+    write_fake_agent_cli(&dir, "cursor-agent");
+    assert!(
+        runtime.redetect_agent_cli(dir.to_string_lossy().into_owned()),
+        "re-detect must find Agent CLI after it appears on PATH"
+    );
+    assert!(runtime.agent_cli_present());
+    assert_eq!(runtime.operator_health(), OperatorHealth::Stopped);
 }
